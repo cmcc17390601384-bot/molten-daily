@@ -94,17 +94,13 @@ def test_manual_queries_work_without_api(tmp_path,monkeypatch):
 
 def test_direction_ui_persists_and_clears_stale_queries(tmp_path):
     app=QApplication.instance() or QApplication([]);store=Store(tmp_path/'data')
-    w=Window(store,smoke=True)
-    w.topic_mode.setCurrentIndex(1);assert not w.queries.toPlainText() and not w.nuclear.isEnabled()
-    w.topic_input.setPlainText('肿瘤免疫治疗');w.queries.setPlainText('cancer immunotherapy')
-    assert w.save_settings()
-    w.close();w.deleteLater();app.processEvents()
-    w=Window(store,smoke=True)
-    assert w.topic_mode.currentData()=='custom' and w.queries.toPlainText()=='cancer immunotherapy'
-    assert '肿瘤免疫治疗' in w.topic_label.text()
-    w.topic_input.setPlainText('钠离子电池');assert not w.queries.toPlainText()
-    assert w.save_settings() and store.settings()['queries']==[]
-    w.topic_mode.setCurrentIndex(0);assert 'molten' in w.queries.toPlainText() and w.nuclear.isEnabled()
+    w=Window(store,smoke=True);w.topic_input.setText('肿瘤免疫治疗');w.topic_input.textEdited.emit('肿瘤免疫治疗')
+    assert not w.queries.toPlainText()
+    w.queries.setPlainText('cancer immunotherapy');assert w.save_settings()
+    w.close();w.deleteLater();app.processEvents();w=Window(store,smoke=True)
+    assert w.topic_input.text()=='肿瘤免疫治疗' and w.queries.toPlainText()=='cancer immunotherapy'
+    w.topic_input.setText('钠离子电池');w.topic_input.textEdited.emit('钠离子电池')
+    assert not w.queries.toPlainText() and w.save_settings()
     w.close();w.deleteLater();app.processEvents()
 
 

@@ -14,43 +14,33 @@ def main():
     app=QApplication(sys.argv);install_theme(app,STYLE);app.setApplicationName(APP);app.setQuitOnLastWindowClosed(False)
     store=Store(); lock=QLockFile(str(store.root/'app.lock'));lock.setStaleLockTime(0)
     if not lock.tryLock(100):
-        QMessageBox.information(None,APP,'软件已在运行。请从系统托盘打开。');return 0
+        QMessageBox.information(None,APP,'软件已在运行，请切换到已有窗口。');return 0
     w=Window(store,smoke=bool(args.smoke))
-    if not args.tray or args.smoke:w.show()
+    w.show()  # The simplified app has no background tray workflow.
     if args.smoke:
         dest=Path(args.smoke);dest.mkdir(parents=True,exist_ok=True)
         def capture():
             try:
                 import fitz
-                from translation import Translator
                 from core import protect,unprotect
-                w.grab().save(str(dest/'exe_dashboard.png')); w.nav.setCurrentRow(4);app.processEvents();w.grab().save(str(dest/'exe_settings.png'))
-                w.topic_mode.setCurrentIndex(1);w.topic_input.setPlainText('钠离子电池正极材料的结构演变与原位表征')
-                w.queries.setPlainText('sodium ion battery cathode operando\nsodium ion battery structural evolution')
-                assert w.save_settings() and store.settings()['topic_mode']=='custom'
-                app.processEvents();w.grab().save(str(dest/'exe_custom_topic.png'))
+                w.grab().save(str(dest/'exe_search.png'));w.tabs.setCurrentIndex(2);app.processEvents();w.grab().save(str(dest/'exe_settings.png'))
                 pdf=dest/'smoke_source.pdf';d=fitz.open();p=d.new_page()
-                p.insert_text((40,80),'Uranium electrodeposition in molten NaAlCl4 at 453 K.')
-                p.draw_rect(fitz.Rect(40,130,260,240),fill=(.1,.6,.5));d.save(pdf);d.close()
-                class LocalTestClient:
-                    def json(self,system,payload,max_tokens):
-                        return {'id':payload['id'],'zh':'本地排版测试：'+payload['text'],'glossary':[]}
-                result=Translator(Store(dest/'data'),client=LocalTestClient()).run(pdf)
+                p.insert_textbox(fitz.Rect(40,60,550,145),'Uranium electrodeposition in molten salt proceeds at 453 K. The electrolyte controls dendritic growth and current efficiency.',fontsize=12)
+                p.insert_textbox(fitz.Rect(40,165,550,240),'Operando measurements show a recovery yield of 94.6%. Recovery yield is not equivalent to current efficiency.',fontsize=12)
+                p.draw_rect(fitz.Rect(40,290,360,465),fill=(.1,.6,.5));d.save(pdf);d.close()
                 from margins import MarginAnnotator
-                class LocalMarginClient:
+                class LocalClient:
                     def json(self,system,payload,max_tokens):
-                        return {'items':[{'unit':payload[0]['id'],'kind':'phrase','quote':'molten NaAlCl4','ipa':'','zh':'NaAlCl4 熔盐'}]}
-                margin_result=MarginAnnotator(Store(dest/'data'),client=LocalMarginClient()).run(pdf)
-                from analysis_report import PaperAnalyzer,import_local,report_html
-                class LocalAnalysisClient:
-                    def json(self,system,payload,max_tokens):
-                        u=payload[0];return {'title':'本地打包测试','sections':{'overview':[{'text':'本地证据定位测试。','kind':'fact','evidence':[{'unit':u['id'],'quote':u['text']}]}]},'questions':['测试问题']}
-                import_local(Store(dest/'data'),pdf)
-                analysis_result=PaperAnalyzer(Store(dest/'data'),client=LocalAnalysisClient()).run(pdf)
-                w.analysis_state=analysis_result['state'];w.analysis_view.setHtml(report_html(analysis_result['state']));w.nav.setCurrentRow(6);app.processEvents();w.grab().save(str(dest/'exe_analysis.png'))
-                w.load_pdf(str(pdf));w.nav.setCurrentRow(2);app.processEvents();w.render_page();w.grab().save(str(dest/'exe_reader.png'))
+                        return {'id':payload['id'],'zh':'完整中文译文：'+payload['text'],'items':[{'kind':'word','quote':'electrodeposition','ipa':'/ɪˌlektroʊˌdepəˈzɪʃən/','zh':'电沉积'},
+                            {'kind':'phrase','quote':'recovery yield','ipa':'','zh':'回收率'}]}
+                result=MarginAnnotator(store,client=LocalClient()).run(pdf)
+                w.tabs.setCurrentIndex(1);w.load_pdf(str(pdf));w.margin_done(result);app.processEvents();w.fit_width();app.processEvents();w.grab().save(str(dest/'exe_reader.png'))
+                w.zoom.setValue(100);first_width=w.pdf_label.pixmap().width();w.change_zoom(50);assert w.pdf_label.pixmap().width()>first_width
+                w.fit_width()
+                with fitz.open(result['pdf']) as output:output[0].get_pixmap(matrix=fitz.Matrix(1.3,1.3)).save(str(dest/'margin_preview.png'))
                 encrypted=protect('local-self-test');assert unprotect(encrypted)=='local-self-test'
-                report={'ok':True,'native_qt':True,'pages':w.stack.count(),'version':VERSION,'exe':sys.executable,'dpapi_roundtrip':True,'pdf_export':result['audit'],'margin_export':margin_result['audit'],'local_import_analysis':True,'custom_topic_settings':True}
+                report={'ok':True,'native_qt':True,'pages':w.tabs.count(),'version':VERSION,'dpapi_roundtrip':True,
+                        'margin_export':result['audit'],'zoom':True,'daily_limit':store.settings()['daily_token_limit']}
                 if args.check_api:
                     from services import DeepSeek
                     report['live_api_models']=DeepSeek(store).models()

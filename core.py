@@ -5,13 +5,13 @@ from ctypes import wintypes
 from datetime import date, datetime
 from pathlib import Path
 
-VERSION = '1.1.0'
+VERSION = '1.2.0'
 APP = '熔盐文献日课'
 DEFAULTS = dict(base_url='https://api.deepseek.com', model='deepseek-flash', api_secret='',
                 openalex_secret='', email='', days=90, daily_count=3, max_pages=8,
                 min_if=10.0, metric_year=2024, nuclear_only=False, strict_pages=False,
                 schedule=True, schedule_time='09:00', autostart=False,
-                ai_ranking=True, daily_token_limit=80000, last_auto_day='', last_success='',
+                ai_ranking=True, daily_token_limit=1000000, last_auto_day='', last_success='',
                 topic_mode='molten', research_topic='',
                 queries=['molten salt electrochemical', 'molten salt uranium',
                          'molten salt nuclear electrorefining', 'molten salt electrodeposition'])
@@ -93,6 +93,10 @@ class Store:
                 CREATE TABLE IF NOT EXISTS events(ts TEXT,kind TEXT,message TEXT);''')
         if not (self.root/'settings.json').exists(): self.save_settings(dict(DEFAULTS))
         if not (self.root/'journal_metrics.csv').exists(): self.write_metrics(METRICS)
+        settings=self.settings()
+        if settings.get('budget_schema',0)<2:
+            self.update_settings(daily_token_limit=max(1000000,int(settings['daily_token_limit'])),budget_schema=2,schedule=False)
+        self.budget_handler=None
     def db(self):
         c=sqlite3.connect(self.path,timeout=20); c.row_factory=sqlite3.Row; return c
     def settings(self):
@@ -144,6 +148,14 @@ class Store:
         return row[0] if row else 0
     def add_usage(self,n):
         with self.db() as c: c.execute('INSERT INTO usage(day,tokens,calls) VALUES(?,?,1) ON CONFLICT(day) DO UPDATE SET tokens=tokens+excluded.tokens,calls=calls+1',(date.today().isoformat(),int(n)))
+    def daily_budget(self):
+        s=self.settings()
+        return int(s['daily_token_limit'])+(int(s.get('token_extra',0)) if s.get('token_extra_day')==date.today().isoformat() else 0)
+    def extend_budget(self,amount):
+        with self.lock:
+            s=self.settings(); today=date.today().isoformat()
+            prior=int(s.get('token_extra',0)) if s.get('token_extra_day')==today else 0
+            self.update_settings(token_extra_day=today,token_extra=prior+int(amount))
     def event(self,kind,message):
         with self.db() as c: c.execute('INSERT INTO events VALUES(?,?,?)',(datetime.now().isoformat(timespec='seconds'),kind,safe_error(message)))
     def events(self):

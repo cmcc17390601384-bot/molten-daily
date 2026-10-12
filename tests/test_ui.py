@@ -1,27 +1,30 @@
-import sys,os
-from pathlib import Path
-sys.path.insert(0,str(Path(__file__).parents[1]))
-from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication,QMessageBox
 from PySide6.QtTest import QTest
-from core import Store
+from core import Store,SEEDS
 from ui import Window
+from test_core import sample_pdf
+import threading
 
-def test_native_workflow(tmp_path):
-    app=QApplication.instance() or QApplication([])
-    store=Store(tmp_path/'data');w=Window(store,smoke=True);w.show();QTest.qWait(200)
-    w.seed();assert w.lib_table.rowCount()==2
+def test_simple_native_workflow_and_zoom(tmp_path):
+    app=QApplication.instance() or QApplication([]);store=Store(tmp_path/'data');store.put(SEEDS[0])
+    w=Window(store,smoke=True);w.show();QTest.qWait(70)
+    assert w.tabs.count()==3 and [w.tabs.tabText(i) for i in range(3)]==['找文献','PDF 留白精读','设置']
+    assert w.lib_table.rowCount()==1
+    assert w.queries.toPlainText().splitlines()==store.settings()['queries']
     w.lib_table.selectRow(0);app.processEvents();assert w.selected
-    w.favorite();assert sum(p['favorite'] for p in store.papers())==1
-    w.mark_read();assert sum(p['seen'] for p in store.papers())==1
-    w.nav.setCurrentRow(4);w.days.setValue(60);assert w.save_settings();assert store.settings()['days']==60
-    w.filter.setText('nonexistent-paper');assert w.lib_table.rowCount()==0
+    w.days.setValue(60);assert w.save_settings() and store.settings()['days']==60
+    pdf=tmp_path/'sample.pdf';sample_pdf(pdf);w.tabs.setCurrentIndex(1);w.load_pdf(pdf)
+    w.zoom.setValue(100);width=w.pdf_label.pixmap().width();w.change_zoom(50)
+    assert w.pdf_label.pixmap().width()>width*1.45
+    w.change_zoom(-100);assert w.pdf_label.pixmap().width()<width*.55
+    w.fit_width();assert w.fit_mode
+    w.filter.setText('not-a-paper');assert w.lib_table.rowCount()==0
     w.close();w.deleteLater();app.processEvents()
 
-def test_daily_timer_only_attempts_once_per_day(tmp_path):
-    app=QApplication.instance() or QApplication([])
-    store=Store(tmp_path/'data');store.update_settings(schedule_time='00:00',last_auto_day='')
-    w=Window(store,smoke=True);calls=[];w.search=lambda:calls.append('query')
-    w.tick();w.tick();assert len(calls)==1
-    store.update_settings(last_auto_day='',schedule=False);w.tick();assert len(calls)==1
+def test_budget_dialog_yes_and_no(tmp_path,monkeypatch):
+    app=QApplication.instance() or QApplication([]);w=Window(Store(tmp_path/'data'),smoke=True)
+    for answer,expected in [(QMessageBox.Yes,True),(QMessageBox.No,False)]:
+        monkeypatch.setattr(QMessageBox,'question',lambda *args:answer)
+        r=dict(used=10,limit=10,estimate=100,extra=1000000,event=threading.Event(),approved=False)
+        w.confirm_budget(r);assert r['approved']==expected and r['event'].is_set()
     w.close();w.deleteLater();app.processEvents()
