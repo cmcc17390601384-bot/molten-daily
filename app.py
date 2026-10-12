@@ -25,6 +25,10 @@ def main():
                 from translation import Translator
                 from core import protect,unprotect
                 w.grab().save(str(dest/'exe_dashboard.png')); w.nav.setCurrentRow(4);app.processEvents();w.grab().save(str(dest/'exe_settings.png'))
+                w.topic_mode.setCurrentIndex(1);w.topic_input.setPlainText('钠离子电池正极材料的结构演变与原位表征')
+                w.queries.setPlainText('sodium ion battery cathode operando\nsodium ion battery structural evolution')
+                assert w.save_settings() and store.settings()['topic_mode']=='custom'
+                app.processEvents();w.grab().save(str(dest/'exe_custom_topic.png'))
                 pdf=dest/'smoke_source.pdf';d=fitz.open();p=d.new_page()
                 p.insert_text((40,80),'Uranium electrodeposition in molten NaAlCl4 at 453 K.')
                 p.draw_rect(fitz.Rect(40,130,260,240),fill=(.1,.6,.5));d.save(pdf);d.close()
@@ -46,7 +50,7 @@ def main():
                 w.analysis_state=analysis_result['state'];w.analysis_view.setHtml(report_html(analysis_result['state']));w.nav.setCurrentRow(6);app.processEvents();w.grab().save(str(dest/'exe_analysis.png'))
                 w.load_pdf(str(pdf));w.nav.setCurrentRow(2);app.processEvents();w.render_page();w.grab().save(str(dest/'exe_reader.png'))
                 encrypted=protect('local-self-test');assert unprotect(encrypted)=='local-self-test'
-                report={'ok':True,'native_qt':True,'pages':w.stack.count(),'version':VERSION,'exe':sys.executable,'dpapi_roundtrip':True,'pdf_export':result['audit'],'margin_export':margin_result['audit'],'local_import_analysis':True}
+                report={'ok':True,'native_qt':True,'pages':w.stack.count(),'version':VERSION,'exe':sys.executable,'dpapi_roundtrip':True,'pdf_export':result['audit'],'margin_export':margin_result['audit'],'local_import_analysis':True,'custom_topic_settings':True}
                 if args.check_api:
                     from services import DeepSeek
                     report['live_api_models']=DeepSeek(store).models()

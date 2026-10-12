@@ -9,7 +9,8 @@ from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBo
     QLabel,QPushButton,QListWidget,QStackedWidget,QTableWidget,QTableWidgetItem,QHeaderView,QSplitter,
     QTextBrowser,QTextEdit,QLineEdit,QComboBox,QSpinBox,QDoubleSpinBox,QCheckBox,QTimeEdit,QFormLayout,
     QScrollArea,QFileDialog,QInputDialog,QMessageBox,QProgressBar,QSystemTrayIcon,QMenu,QFrame,QAbstractItemView)
-from core import APP,VERSION,SEEDS,Store,protect,unprotect,safe_error,set_autostart
+from core import APP,VERSION,SEEDS,Store,protect,unprotect,safe_error,set_autostart,DEFAULTS
+from topics import custom_topic,research_topic,current_assessment,query_lines
 from services import Retriever,DeepSeek,eligibility,topic_score,download_pdf,Cancelled
 from translation import Translator,extract_document,scientific_html
 from margins import MarginAnnotator
@@ -63,7 +64,7 @@ class Window(QMainWindow):
         side=QWidget(); side.setObjectName('sidebar'); side.setFixedWidth(210); sv=QVBoxLayout(side); sv.setContentsMargins(22,30,22,20)
         sv.addWidget(label('熔盐日课','brand')); sv.addWidget(label('MOLTEN DAILY\n每天读懂一点前沿','subbrand')); sv.addSpacing(25)
         self.nav=QListWidget(); self.nav.setObjectName('nav'); self.nav.addItems(['01   每日精选','02   我的文献','03   对照精读','04   生词本','05   设置与指标','06   运行记录','07   文献分析']); sv.addWidget(self.nav)
-        sv.addWidget(label('原生桌面 · 本地资料库\n核能优先 / 证据可追溯','subbrand')); outer.addWidget(side)
+        sv.addWidget(label('原生桌面 · 本地资料库\n自定义方向 / 证据可追溯','subbrand')); outer.addWidget(side)
         right=QWidget(); rv=QVBoxLayout(right); rv.setContentsMargins(26,22,26,14); self.stack=QStackedWidget(); rv.addWidget(self.stack,1)
         self.status=label('就绪。每日精选依据实际出版记录，暂无新文献时不会虚构推荐。','muted'); rv.addWidget(self.status)
         bottom=QHBoxLayout(); self.progress=QProgressBar(); self.progress.setRange(0,0); self.progress.hide(); bottom.addWidget(self.progress,1)
@@ -81,11 +82,12 @@ class Window(QMainWindow):
         w=QWidget(); v=QVBoxLayout(w); v.setContentsMargins(0,0,0,0); v.setSpacing(14); v.addWidget(label(title,'heading')); v.addWidget(label(subtitle,'muted')); self.stack.addWidget(w); return v
     def make_dashboard(self):
         v=self.page('每日精选','少量、高相关、可追溯。新文献窗口与篇幅偏好可在设置中调整。')
+        self.topic_label=label('','muted'); v.addWidget(self.topic_label)
         h=QHBoxLayout(); self.cards=[]
         for text in ['可学习文献','待读文献','今日 Token']:
             l=label(text,'card'); h.addWidget(l); self.cards.append(l)
         v.addLayout(h); h=QHBoxLayout(); self.search_btn=button('立即查询新文献',self.search,True); h.addWidget(self.search_btn)
-        h.addWidget(button('加载入门文献',self.seed)); h.addWidget(button('按 DOI 加入',self.add_doi)); h.addStretch(); v.addLayout(h)
+        h.addWidget(button('熔盐入门示例',self.seed)); h.addWidget(button('修改文献方向',lambda:self.nav.setCurrentRow(4))); h.addWidget(button('按 DOI 加入',self.add_doi)); h.addStretch(); v.addLayout(h)
         last=self.store.settings().get('last_success','')
         self.digest=label(('上次成功检索：'+last+'。下方显示当前符合条件的待读文献。') if last else '尚未查询。首次使用可加载前两篇核能背景文献作为学习起点。','muted'); v.addWidget(self.digest)
         self.daily_table=table(['论文 / 推荐依据','期刊','JIF（年份）','页数','发表日期']); self.daily_table.horizontalHeader().setSectionResizeMode(0,QHeaderView.Stretch)
@@ -119,6 +121,11 @@ class Window(QMainWindow):
     def make_settings(self):
         v=self.page('设置与指标','密钥使用 Windows 系统加密；不会写入日志。指标按选定年份严格匹配，可导入 CSV 扩大期刊覆盖。')
         scroll=QScrollArea(); scroll.setWidgetResizable(True); content=QWidget(); form=QFormLayout(content); form.setSpacing(12); s=self.store.settings()
+        self.topic_mode=QComboBox(); self.topic_mode.addItem('熔盐电化学（核能优先）','molten'); self.topic_mode.addItem('自定义研究方向','custom'); self.topic_mode.setCurrentIndex(1 if custom_topic(s) else 0); form.addRow('文献方向',self.topic_mode)
+        self.topic_input=QTextEdit(s.get('research_topic','')); self.topic_input.setMaximumHeight(85); self.topic_input.setPlaceholderText('例如：钠离子电池正极材料的结构演变与原位表征；或肿瘤免疫治疗中的耐药机制'); form.addRow('自定义方向（中文或英文）',self.topic_input)
+        self.queries=QTextEdit('\n'.join(s['queries'])); self.queries.setMaximumHeight(90); form.addRow('检索词（每行一组，最多 6 组）',self.queries)
+        self.generate_queries_btn=button('用 AI 生成英文检索词',self.generate_queries); form.addRow('',self.generate_queries_btn)
+        form.addRow('',label('中文描述可直接保存，首次查询时自动生成英文检索词（调用 API）；也可手动填写英文词组。修改方向后会清空旧检索词。JIF、篇幅和日期条件继续生效。','muted'))
         self.base=QLineEdit(s['base_url']); form.addRow('API 地址（HTTPS）',self.base)
         self.secret=QLineEdit(); self.secret.setEchoMode(QLineEdit.Password); self.secret.setPlaceholderText('已加密保存；留空保持不变' if s['api_secret'] else '输入 DeepSeek API Key'); form.addRow('DeepSeek 密钥',self.secret)
         scope='当前保存方式：本机绑定 DPAPI（受限环境回退）。请勿共享 userdata；在正常账户重新保存密钥可使用账户绑定。' if s['api_secret'].startswith('machine:') else '优先当前账户 DPAPI；受限环境回退为本机绑定 DPAPI。不要共享 userdata。'
@@ -133,25 +140,43 @@ class Window(QMainWindow):
         self.strict=QCheckBox('严格限制页数（页数未知也不推送）'); self.strict.setChecked(s['strict_pages']); form.addRow('',self.strict)
         self.minif=QDoubleSpinBox(); self.minif.setRange(0,100); self.minif.setValue(s['min_if']); form.addRow('JIF 必须大于',self.minif)
         self.year=QSpinBox(); self.year.setRange(2020,date.today().year); self.year.setValue(s['metric_year']); form.addRow('采用 JIF 年份',self.year)
-        self.nuclear=QCheckBox('仅核能相关（默认优先核能，可兼顾其他熔盐电化学）'); self.nuclear.setChecked(s['nuclear_only']); form.addRow('',self.nuclear)
+        self.nuclear=QCheckBox('仅核能相关（只用于熔盐预设；自定义方向以填写内容为准）'); self.nuclear.setChecked(s['nuclear_only']); form.addRow('',self.nuclear)
         self.airank=QCheckBox('用 DeepSeek 分析推荐理由（消耗 API Token）'); self.airank.setChecked(s['ai_ranking']); form.addRow('',self.airank)
         self.budget=QSpinBox(); self.budget.setRange(1000,1000000); self.budget.setSingleStep(10000); self.budget.setValue(s['daily_token_limit']); form.addRow('每天 Token 预算上限',self.budget)
         self.schedule=QCheckBox('每天自动查询并发送系统托盘通知'); self.schedule.setChecked(s['schedule']); form.addRow('',self.schedule)
         self.clock=QTimeEdit(QTime.fromString(s['schedule_time'],'HH:mm')); self.clock.setDisplayFormat('HH:mm'); form.addRow('每天本地时间',self.clock)
         self.startup=QCheckBox('登录 Windows 后启动到托盘'); self.startup.setChecked(s['autostart']); form.addRow('',self.startup)
-        self.queries=QTextEdit('\n'.join(s['queries'])); self.queries.setMaximumHeight(115); form.addRow('检索词（每行一组，最多 6 组）',self.queries)
         self.metric_table=table(['期刊','ISSN','年份','JIF','来源','核实日期']); self.metric_table.setMinimumHeight(170); form.addRow('指标表',self.metric_table)
         h=QHBoxLayout(); h.addWidget(button('导入指标 CSV',self.import_metrics)); h.addWidget(button('导出指标 CSV',self.export_metrics)); h.addWidget(button('打开本机数据目录',lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.store.root))))); form.addRow('',h)
         form.addRow('',label('预置指标表仅覆盖 3 本已核实期刊，采用 2024 年数据。其他期刊会进入候选，导入有年份/来源的 JIF 后参与筛选。','muted'))
         scroll.setWidget(content); v.addWidget(scroll,1); v.addWidget(button('保存设置',self.save_settings,True)); self.load_metric_table()
+        self.topic_mode.currentIndexChanged.connect(self.change_topic_mode)
+        self.topic_input.textChanged.connect(lambda:self.queries.clear() if self.topic_mode.currentData()=='custom' else None)
+        self.update_topic_controls()
+    def update_topic_controls(self):
+        custom=self.topic_mode.currentData()=='custom'
+        self.topic_input.setEnabled(custom); self.generate_queries_btn.setEnabled(custom); self.nuclear.setEnabled(not custom)
+    def change_topic_mode(self):
+        self.update_topic_controls()
+        self.queries.setPlainText('' if self.topic_mode.currentData()=='custom' else '\n'.join(DEFAULTS['queries']))
+    def generate_queries(self):
+        if not self.save_settings():return
+        settings=self.store.settings()
+        if not settings.get('api_secret'):self.job_error('请先填写 API 密钥，或手动填写英文检索词。');return
+        def done(queries):
+            self.queries.setPlainText('\n'.join(queries)); self.store.update_settings(queries=queries)
+            self.status.setText('英文检索词已生成并保存，可继续编辑或立即查询。')
+        self.run_job('生成研究方向检索词…',lambda c,p:DeepSeek(self.store,settings,c).plan_queries(),done)
     def make_logs(self):
         v=self.page('运行记录','区分检索成功、部分来源失败、API 错误与翻译中断；日志自动隐藏密钥。'); self.logs=QTextBrowser(); v.addWidget(self.logs,1); v.addWidget(button('刷新记录',self.refresh_logs))
     def run_job(self,name,fn,callback):
         if self.worker and self.worker.isRunning(): self.status.setText('当前任务仍在运行；可先停止再开始其他任务。'); return
+        self.stack.widget(4).setEnabled(False)
         self.cancel_event=threading.Event(); self.worker=Worker(fn,self.cancel_event,self); self.progress.show(); self.cancel_btn.show(); self.search_btn.setEnabled(False)
         self.translate_first.setEnabled(False); self.translate_all.setEnabled(False); self.status.setText(name)
         self.worker.progress.connect(self.status.setText); self.worker.result.connect(callback); self.worker.failed.connect(self.job_error); self.worker.finished.connect(self.job_finished); self.worker.start()
     def job_finished(self):
+        self.stack.widget(4).setEnabled(True)
         self.progress.hide(); self.cancel_btn.hide(); self.search_btn.setEnabled(True); self.translate_first.setEnabled(True); self.translate_all.setEnabled(True); self.refresh(); self.refresh_logs()
         if self.want_quit: QApplication.quit()
     def job_error(self,text):
@@ -161,6 +186,7 @@ class Window(QMainWindow):
         if self.cancel_event: self.cancel_event.set(); self.status.setText('正在停止；当前网络请求结束后保留已完成进度。')
     def search(self): self.run_job('正在检索…',lambda c,p:Retriever(self.store,c,p).search(),self.search_done)
     def search_done(self,r):
+        self.queries.setPlainText('\n'.join(self.store.settings()['queries']))
         s=f"检索 {r['fetched']} 条记录，主题相关 {r['relevant']} 篇；新增 {r['new']} 篇，本次精选 {len(r['selected'])} 篇。"
         if not r['selected']: s+=' 暂无尚未推送且符合条件的新文献，可继续阅读资料库。'
         if r['errors']: s+=' 部分服务未完成，详见运行记录。'
@@ -181,6 +207,7 @@ class Window(QMainWindow):
         if ok and value: self.run_job('正在验证 DOI…',lambda c,p:Retriever(self.store,c,p).by_doi(value),lambda r:self.status.setText('已验证并加入：'+r['title']))
     def refresh(self,*_):
         allp=self.store.papers(); s=self.store.settings(); cutoff=(date.today()-timedelta(days=s['days'])).isoformat()
+        self.topic_label.setText('当前方向：'+research_topic(s))
         daily=[p for p in allp if not p.get('seed') and not p['seen'] and cutoff<=p.get('date','')<=date.today().isoformat() and eligibility(p,self.store,s)[0]]
         daily.sort(key=lambda p:(eligibility(p,self.store,s)[1],p.get('date','')),reverse=True); self.fill_papers(self.daily_table,daily[:s['daily_count']],True)
         self.cards[0].setText(f'资料库\n{len(allp)} 篇'); self.cards[1].setText(f'待读\n{sum(not p["seen"] for p in allp)} 篇'); self.cards[2].setText(f'今日用量\n{self.store.tokens():,} Token')
@@ -195,7 +222,7 @@ class Window(QMainWindow):
     def fill_papers(self,t,rows,daily=False):
         t.blockSignals(True); t.setRowCount(len(rows))
         for i,p in enumerate(rows):
-            ok,score,reasons,m=eligibility(p,self.store); title=p.get('ai',{}).get('title_zh') or p['title']
+            ok,score,reasons,m=eligibility(p,self.store); title=current_assessment(p,self.store.settings()).get('title_zh') or p['title']
             if p['favorite']: title='★ '+title
             metric=f"{float(m['value']):g} ({m['year']})" if m else '未核实'
             cells=[title,p['journal'],metric,str(p.get('pages') or '未知'),p.get('date','') if daily else ('已读' if p['seen'] else '未读')+(' / 入门' if p.get('seed') else ' / 符合' if ok else ' / 候选')]
@@ -213,8 +240,9 @@ class Window(QMainWindow):
         text=f'<h3>{e(p["title"])}</h3><p>{e(p.get("authors",""))}</p><p>{identity} · {e(p.get("date",""))} · {e(p.get("source",""))}</p>'
         text+=f'<p><b>{"符合当前筛选" if ok else "候选："+e("；".join(reasons))}</b> · 相关性参考分 {score}</p>'
         if m: text+=f'<p>JIF {m["value"]}（{m["year"]}）· <a href="{e(m["source"])}">指标来源</a> · 核实日期 {m["checked"]}</p>'
-        if p.get('ai'):
-            a=p['ai']; text+=f'<p><b>推荐理由</b> {e(a["reason"])}<br><b>新意</b> {e(a["novelty"])}<br><b>学习问题</b> {e(" / ".join(a["questions"]))}<br><small>{e(a["basis"])}</small></p>'
+        a=current_assessment(p,self.store.settings())
+        if a:
+            text+=f'<p><b>推荐理由</b> {e(a["reason"])}<br><b>新意</b> {e(a["novelty"])}<br><b>学习问题</b> {e(" / ".join(a["questions"]))}<br><small>{e(a["basis"])}</small></p>'
         text+='<p><b>摘要 / 来源说明</b><br>'+e(p.get('abstract') or '数据库未提供摘要；不据此推断实验结论。')+'</p>'
         self.detail.setHtml(text); self.daily_detail.setHtml(text)
     def favorite(self):
@@ -355,11 +383,16 @@ class Window(QMainWindow):
             with open(file,'w',encoding='utf-8-sig',newline='') as f:
                 w=csv.DictWriter(f,fieldnames=['term','ipa','meaning','origin']);w.writeheader();w.writerows(self.gloss)
     def save_settings(self,checked=False):
+        if self.worker and self.worker.isRunning():self.status.setText('请等待当前任务结束再保存方向。');return False
         try:
             from services import public_url
             base=public_url(self.base.text().strip().rstrip('/')); s=self.store.settings()
-            queries=[q.strip() for q in self.queries.toPlainText().splitlines() if q.strip()][:6]
-            if not queries:raise ValueError('至少保留一组检索词。')
+            queries=[q.strip() for q in self.queries.toPlainText().splitlines() if q.strip()]
+            mode=self.topic_mode.currentData(); topic=self.topic_input.toPlainText().strip()
+            if mode=='custom' and not 1<=len(topic)<=1500:raise ValueError('请填写 1–1500 个字符的自定义文献方向。')
+            if queries:queries=query_lines(queries)
+            elif mode!='custom':raise ValueError('至少保留一组检索词。')
+            s.update(topic_mode=mode,research_topic=topic)
             s.update(base_url=base,model=self.model.currentText().strip(),email=self.email.text().strip(),days=self.days.value(),daily_count=self.count.value(),
                 max_pages=self.maxpages.value(),min_if=self.minif.value(),metric_year=self.year.value(),nuclear_only=self.nuclear.isChecked(),strict_pages=self.strict.isChecked(),
                 ai_ranking=self.airank.isChecked(),daily_token_limit=self.budget.value(),schedule=self.schedule.isChecked(),schedule_time=self.clock.time().toString('HH:mm'),queries=queries)

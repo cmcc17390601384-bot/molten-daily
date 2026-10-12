@@ -5,13 +5,14 @@ from ctypes import wintypes
 from datetime import date, datetime
 from pathlib import Path
 
-VERSION = '1.0.1'
+VERSION = '1.1.0'
 APP = '熔盐文献日课'
 DEFAULTS = dict(base_url='https://api.deepseek.com', model='deepseek-flash', api_secret='',
                 openalex_secret='', email='', days=90, daily_count=3, max_pages=8,
                 min_if=10.0, metric_year=2024, nuclear_only=False, strict_pages=False,
                 schedule=True, schedule_time='09:00', autostart=False,
                 ai_ranking=True, daily_token_limit=80000, last_auto_day='', last_success='',
+                topic_mode='molten', research_topic='',
                 queries=['molten salt electrochemical', 'molten salt uranium',
                          'molten salt nuclear electrorefining', 'molten salt electrodeposition'])
 METRICS = [

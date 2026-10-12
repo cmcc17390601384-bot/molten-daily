@@ -11,13 +11,14 @@ from pathlib import Path
 import fitz
 from core import safe_error
 from services import DeepSeek, ApiError, check_cancel
+from topics import custom_topic
 
-PROMPT_VERSION='2026-10-v3'
+PROMPT_VERSION='2026-10-v4-general'
 GLOSSARY={
  'dendrite':('/ˈdendraɪt/','枝晶；树枝状晶体'),
  'dendritic':('/denˈdrɪtɪk/','枝晶状的'),
  'electrodeposition':('/ɪˌlektroʊˌdepəˈzɪʃən/','电沉积'),
- 'electrolyte':('/ɪˈlektrəlaɪt/','电解质；本语境中常指熔盐电解质'),
+ 'electrolyte':('/ɪˈlektrəlaɪt/','电解质'),
  'precipitation':('/prɪˌsɪpɪˈteɪʃən/','沉淀；固相从溶液或熔盐中析出'),
  'eutectic':('/juːˈtektɪk/','共晶的；共晶混合物'),
  'anodic':('/æˈnɒdɪk/','阳极的'),
@@ -115,7 +116,7 @@ class Translator:
         self.store=store; self.cancel=cancel; self.progress=progress; self.client=client or DeepSeek(store,cancel=cancel)
     def run(self,path,page_limit=None):
         doc=extract_document(path); s=self.store.settings()
-        key=hashlib.sha256((doc['hash']+s['model']+s['base_url']+PROMPT_VERSION).encode()).hexdigest()[:24]
+        key=hashlib.sha256((doc['hash']+s['model']+s['base_url']+PROMPT_VERSION+str(custom_topic(s))).encode()).hexdigest()[:24]
         folder=self.store.root/'translations'/key; folder.mkdir(exist_ok=True); statefile=folder/'translation.json'
         if statefile.exists(): state=json.loads(statefile.read_text('utf-8')); state['document']=doc
         else: state={'document':doc,'model':s['model'],'prompt_version':PROMPT_VERSION,'results':{},'errors':{},'updated':''}
@@ -135,9 +136,9 @@ class Translator:
                 state['results'][u['id']]={'zh':'【公式以原文矢量片段保留】','glossary':[],'checks':[],'type':'formula'}; save(); continue
             if not re.search(r'[A-Za-z]{3,}',u['text']):
                 state['results'][u['id']]={'zh':u['text'],'glossary':[],'checks':[],'type':'source'};save();continue
-            system=('你是核能与熔盐电化学专业学术翻译。逐句忠实译为简体中文，不总结、不增删推理或数据，'
+            system=('你是跨学科专业学术翻译。根据原文所属领域确定术语含义，不强加其他领域的含义。逐句忠实译为简体中文，不总结、不增删推理或数据，'
                     '保留may/suggest等不确定性及因果关系。人名、文献题录可保留英文；页眉等也不得漏掉。'
-                    '术语：molten salt=熔盐，uranium=铀，actinide=锕系元素，lanthanide=镧系元素，'
+                    '在电化学语境下的术语参考：molten salt=熔盐，uranium=铀，actinide=锕系元素，lanthanide=镧系元素，'
                     'anode=阳极，cathode=阴极，precipitation=沉淀，electrodeposition=电沉积，'
                     'current efficiency=电流效率，recovery yield=回收率，不得混淆。'
                     '所有 ⟦K000⟧ 一类保护标记必须原样出现一次，禁止改写或翻译。'
@@ -158,7 +159,7 @@ class Translator:
                 if len(zh)<len(u['text'])*.12 and len(u['text'])>200: checks.append('译文异常短，可能遗漏信息')
                 if '\ufffd' in u['text']: checks.append('原文存在无法识别字符')
                 gloss=[]
-                for term,(ipa,meaning) in GLOSSARY.items():
+                for term,(ipa,meaning) in ({} if custom_topic(s) else GLOSSARY).items():
                     if re.search(r'\b'+re.escape(term)+r'\b',u['text'],re.I): gloss.append(dict(term=term,ipa=ipa,meaning=meaning,origin='内置专业词表'))
                 for g in result.get('glossary',[])[:2]:
                     term=str(g.get('term',''))[:80]
