@@ -1,14 +1,15 @@
-# 文献精读 · MoltenDaily 1.2
+# 文献精读 · MoltenDaily 1.3
 
-Windows 原生 EXE，固定浅色 / 深绿色。只有两个主要工作入口：按需找文献、PDF 留白精读，以及一个设置页。
+Windows 原生 EXE，固定浅色 / 深绿色。按“找文献 → 图书馆 → PDF 留白精读”组织操作，全局 API 与额度位于设置。
 
 ## 使用
 
 1. 解压 Windows x64 便携包，运行 MoltenDaily.exe。无需安装 Python。
 2. 在设置填写自己的 API Key，测试连接。旧版用户把新版 EXE 放回原目录，保留 userdata。
 3. 找论文：输入中文或英文研究方向，点击“按此方向查询”。可手动填写英文检索词；留空时由 API 生成。
-4. 读论文：进入“PDF 留白精读”，导入 PDF，点击“生成 / 继续留白精读”。完成后直接在软件内预览或导出。
-5. 用加减按钮、百分比、适合宽度或 Ctrl + 滚轮缩放，支持 25%–400%。关闭窗口即退出，不再后台定时推送。
+4. 图书馆：导入 PDF（支持批量），按需编辑标题、作者、年份、期刊和 DOI，创建分类归档。检索题录可直接获取开放 PDF，或关联已下载的文件。没有可用 PDF 时阅读按钮置灰。
+5. 读论文：选中已关联文献，点击“阅读 PDF”，再点击“生成 / 继续留白精读”。完成后直接在软件内预览或导出；返回图书馆可定位当前论文。
+6. 用加减按钮、百分比、适合宽度或 Ctrl + 滚轮缩放，支持 25%–400%。关闭窗口即退出，不再后台定时推送。
 
 ## 留白精读与续做
 
@@ -23,15 +24,27 @@ Windows 原生 EXE，固定浅色 / 深绿色。只有两个主要工作入口�
 ## 搜索与限制
 
 - 题录来自 Crossref / OpenAlex；AI 根据实际题目和摘要判断相关性，不生成虚构 DOI。自定义方向不限于熔盐。
-- JIF 按年份与来源筛选，篇幅短者优先。内置 JIF 表只覆盖 3 本期刊的 2024 年指标，可导入 CSV；未知指标标为候选。
+- JIF 按年份与来源筛选，篇幅短者优先。内置 JIF 表只覆盖 3 本期刊的 2024 年指标，可导入 CSV；缺失、年份不符、数值不超过阈值或同一期刊存在冲突数据的记录不进入找文献结果。界面展示数值、年份、核对日期和来源。CSV 是人工维护的数据，不是实时全量 JCR 接口；导入方需保证来源和数值真实。
 - 本版需要有文本层的 PDF，扫描件 OCR 不支持。图内文字和复杂公式保留原文；不能声称 AI 译文和音标零误差。
 - 原文块对应不等于逐行排版一致。长块拆分后仍保留来源编号；参考文献等元数据可保持原文形式。
 - 密钥用 Windows DPAPI 加密，本地保存；受限环境可能使用本机绑定。不要分享 userdata。API 会收到待处理原文文字，密钥不会加入 PDF 或公开源码。
-- 关闭“找文献”中的“只看符合筛选条件”可查看资料库候选。按需查询重复运行仍会显示已找到的符合条件文献。
+- 关闭“只看符合筛选条件”也不能绕过 JIF 和日期硬性门槛。所有本地资料在图书馆管理。按需查询重复运行仍会显示已找到的符合条件文献。
+
+## EndNote 与 Word
+
+在图书馆选中文献，通过“EndNote / Word”菜单操作：
+
+- **EndNote 工作流**：发送题录到 EndNote，选择目标库导入。复制 `{DOI}` 临时引用，粘贴到 Word，然后在 EndNote 选项卡执行 Update Citations and Bibliography。
+- **Word 工作流**：先在 Word 打开可编辑文档并定位光标，然后选择“插入 Word 引用”。插入的是 Word 原生 CITATION 字段；“Word 参考文献表”插入或更新 BIBLIOGRAPHY 字段。保留已选中文本，不自动保存或关闭文档。
+- 将 Word 字段交由 EndNote 管理：EndNote 选项卡 → Export to EndNote → Export Word Citations；随后 Convert Citations and Bibliography → Convert Word Citations to EndNote。[EndNote 官方步骤](https://docs.endnote.com/docs/endnote/2025/v1/windows/en/content/09word/convrting_word_citestoen.htm)。Word 原生字段与 EndNote CWYW 字段有区别。
+- 可导入 EndNote 导出的 XML / RIS，也可导出 RIS / EndNote Tagged。附件使用本机路径；移动导出文件到另一台电脑不会自动搬运 PDF。EndNote 内部附件目录无法定位时可手动关联。
+- 无 DOI 的本地论文可以编辑标题、作者及年份后使用 Word 引用。缺失字段不会由模型编造。修改期刊时清除原期刊 ISSN，避免误匹配 JIF。
+
+Word COM 的真实联调在本次测试环境遭遇 Windows 0x80070520 登录会话限制，**未完成实机验证**；题录 XML 与交换格式自动测试通过。在正常用户桌面可运行 `MoltenDaily.exe --word-smoke word-test.docx` 生成独立测试文档和 JSON；测试不操作用户已有文档。需安装桌面 Word，EndNote 流程需安装其 CWYW 插件。
 
 ## 验证
 
-46 项自动测试通过，涵盖同页中途额度不足、拒绝后续做、同任务追加额度、跨日额度、工作线程弹窗、不丢弃已付费响应、旧缓存复用、数值标记校正、PDF 排版、缩放及固定主题。编译版另做独立 EXE 自检。
+62 项自动测试通过（新增分类、PDF 关联、合并、自定义题录、RIS/XML、Word 来源 XML、JIF 拒绝条件和按钮状态），涵盖同页中途额度不足、拒绝后续做、同任务追加额度、跨日额度、工作线程弹窗、不丢弃已付费响应、旧缓存复用、数值标记校正、PDF 排版、缩放及固定主题。编译版另做独立 EXE 自检。
 
 真实论文首页完成 8 个文本块的翻译与 18 条专业词 / 短语 / 长难句批注，检查了 PDF 首页和续页；重复运行新增 Token 为零。自动验证不能代替科学语义核验。
 
@@ -43,7 +56,7 @@ Windows x64、Python 3.12：
 ./build.ps1 -Test
 ```
 
-或安装 requirements-lock.txt 后使用 PyInstaller 打包 app.py。`--data-dir PATH` 可指定资料目录。`--smoke PATH --data-dir ISOLATED_PATH` 使用本地模拟响应检查三页界面、留白 PDF、缩放和 DPAPI；不调用付费 API。
+或安装 requirements-lock.txt 后使用 PyInstaller 打包 app.py。`--data-dir PATH` 可指定资料目录。`--smoke PATH --data-dir ISOLATED_PATH` 使用本地模拟响应检查四页界面、留白 PDF、缩放和 DPAPI；不调用付费 API。
 
 ## 许可证
 

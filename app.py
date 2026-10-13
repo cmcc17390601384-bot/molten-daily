@@ -3,8 +3,13 @@ import argparse, json, os, sys
 from pathlib import Path
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--tray',action='store_true');parser.add_argument('--smoke',type=str);parser.add_argument('--check-api',action='store_true');parser.add_argument('--data-dir');args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--tray',action='store_true');parser.add_argument('--smoke',type=str);parser.add_argument('--check-api',action='store_true');parser.add_argument('--word-smoke',type=str);parser.add_argument('--data-dir');args=parser.parse_args()
     if args.data_dir:os.environ['MOLTEN_DAILY_HOME']=str(Path(args.data_dir).resolve())
+    if args.word_smoke:
+        from word_bridge import word_action
+        result=word_action('test',dict(doi='10.1234/selftest',title='Word citation self-test',author_list=[dict(family='Zhang',given='San')],date='2025',journal='Test Journal'),args.word_smoke)
+        Path(args.word_smoke).with_suffix('.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),'utf-8')
+        return 0 if result['sources']==1 and result['fields']==3 and result['preserved'] else 1
     from PySide6.QtCore import QTimer,QLockFile,QStandardPaths
     from PySide6.QtWidgets import QApplication,QMessageBox
     from core import Store,APP,VERSION
@@ -23,7 +28,7 @@ def main():
             try:
                 import fitz
                 from core import protect,unprotect
-                w.grab().save(str(dest/'exe_search.png'));w.tabs.setCurrentIndex(2);app.processEvents();w.grab().save(str(dest/'exe_settings.png'))
+                w.grab().save(str(dest/'exe_search.png'));w.tabs.setCurrentIndex(1);app.processEvents();w.grab().save(str(dest/'exe_library.png'));w.tabs.setCurrentIndex(3);app.processEvents();w.grab().save(str(dest/'exe_settings.png'))
                 pdf=dest/'smoke_source.pdf';d=fitz.open();p=d.new_page()
                 p.insert_textbox(fitz.Rect(40,60,550,145),'Uranium electrodeposition in molten salt proceeds at 453 K. The electrolyte controls dendritic growth and current efficiency.',fontsize=12)
                 p.insert_textbox(fitz.Rect(40,165,550,240),'Operando measurements show a recovery yield of 94.6%. Recovery yield is not equivalent to current efficiency.',fontsize=12)
@@ -34,7 +39,7 @@ def main():
                         return {'id':payload['id'],'zh':'完整中文译文：'+payload['text'],'items':[{'kind':'word','quote':'electrodeposition','ipa':'/ɪˌlektroʊˌdepəˈzɪʃən/','zh':'电沉积'},
                             {'kind':'phrase','quote':'recovery yield','ipa':'','zh':'回收率'}]}
                 result=MarginAnnotator(store,client=LocalClient()).run(pdf)
-                w.tabs.setCurrentIndex(1);w.load_pdf(str(pdf));w.margin_done(result);app.processEvents();w.fit_width();app.processEvents();w.grab().save(str(dest/'exe_reader.png'))
+                w.tabs.setCurrentIndex(2);w.load_pdf(str(pdf));w.margin_done(result);app.processEvents();w.fit_width();app.processEvents();w.grab().save(str(dest/'exe_reader.png'))
                 w.zoom.setValue(100);first_width=w.pdf_label.pixmap().width();w.change_zoom(50);assert w.pdf_label.pixmap().width()>first_width
                 w.fit_width()
                 with fitz.open(result['pdf']) as output:output[0].get_pixmap(matrix=fitz.Matrix(1.3,1.3)).save(str(dest/'margin_preview.png'))

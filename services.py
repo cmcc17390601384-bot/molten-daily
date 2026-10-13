@@ -128,7 +128,8 @@ def cr_paper(v):
                 abstract=plain(v.get('abstract','')),url='https://doi.org/'+canonical_doi(v['DOI']),
                 source='Crossref',pdf_url='',authors=', '.join((x.get('given','')+' '+x.get('family','')).strip() for x in v.get('author',[])[:10]),
                 retracted=any(x.get('type') in ('retraction','withdrawal') for x in v.get('update-to',[])),
-                article_type=v.get('type',''))
+                article_type=v.get('type',''),author_list=[{'family':x.get('family',''),'given':x.get('given',''),'name':x.get('name','')} for x in v.get('author',[])],
+                volume=str(v.get('volume','')),issue=str(v.get('issue','')),page_range=str(v.get('page','')),article_number=str(v.get('article-number','')))
 def oa_paper(v):
     inv=v.get('abstract_inverted_index') or {}; words={i:w for w,places in inv.items() for i in places}
     loc=v.get('primary_location') or {}; src=loc.get('source') or {}; best=v.get('best_oa_location') or {}
@@ -168,7 +169,7 @@ class Retriever:
     def search(self,on_demand=False):
         s=self.store.settings(); start=(date.today()-timedelta(days=s['days'])).isoformat(); end=date.today().isoformat()
         if custom_topic(s) and not s['queries']:
-            if not s.get('api_secret'): raise ApiError('请在设置填写英文检索词，或配置 API 后自动生成。')
+            if not s.get('api_secret'): raise ApiError('请在找文献页填写英文检索词，或配置 API 后自动生成。')
             self.progress('正在将自定义方向转换为英文检索词…')
             s['queries']=DeepSeek(self.store,s,self.cancel).plan_queries()
             self.store.update_settings(queries=s['queries'])

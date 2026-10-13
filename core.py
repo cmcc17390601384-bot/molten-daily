@@ -5,7 +5,7 @@ from ctypes import wintypes
 from datetime import date, datetime
 from pathlib import Path
 
-VERSION = '1.2.0'
+VERSION = '1.3.0'
 APP = '熔盐文献日课'
 DEFAULTS = dict(base_url='https://api.deepseek.com', model='deepseek-flash', api_secret='',
                 openalex_secret='', email='', days=90, daily_count=3, max_pages=8,
@@ -90,7 +90,10 @@ class Store:
                 added TEXT NOT NULL, seen INTEGER DEFAULT 0, favorite INTEGER DEFAULT 0, notified INTEGER DEFAULT 0,
                 pdf TEXT DEFAULT '', note TEXT DEFAULT '');
                 CREATE TABLE IF NOT EXISTS usage(day TEXT PRIMARY KEY,tokens INTEGER DEFAULT 0,calls INTEGER DEFAULT 0);
-                CREATE TABLE IF NOT EXISTS events(ts TEXT,kind TEXT,message TEXT);''')
+                CREATE TABLE IF NOT EXISTS events(ts TEXT,kind TEXT,message TEXT);
+                CREATE TABLE IF NOT EXISTS collections(id INTEGER PRIMARY KEY,name TEXT NOT NULL UNIQUE);
+                CREATE TABLE IF NOT EXISTS paper_collections(doi TEXT NOT NULL,collection_id INTEGER NOT NULL,
+                    PRIMARY KEY(doi,collection_id));''')
         if not (self.root/'settings.json').exists(): self.save_settings(dict(DEFAULTS))
         if not (self.root/'journal_metrics.csv').exists(): self.write_metrics(METRICS)
         settings=self.settings()
@@ -123,10 +126,18 @@ class Store:
     def metrics(self):
         with open(self.root/'journal_metrics.csv',encoding='utf-8-sig',newline='') as f: return list(csv.DictReader(f))
     def metric(self,p,year):
+        matches=[]
         for m in self.metrics():
-            match=bool(set(p.get('issn',[])) & set(m['issn'].split(';'))) or m['journal'].casefold()==p.get('journal','').casefold()
-            if match and int(m['year'])==int(year): return m
-        return None
+            try:
+                # Supplied ISSNs must match; a conflicting ISSN cannot fall back to a journal title.
+                known={x.strip().upper() for x in m['issn'].split(';') if x.strip()}
+                actual={x.strip().upper() for x in p.get('issn',[]) if x.strip()}
+                match=bool(actual & known) if actual and known else m['journal'].casefold()==p.get('journal','').casefold()
+                valid=0<float(m['value'])<300 and m['source'].startswith('https://') and bool(date.fromisoformat(m['checked']))
+                if match and valid and int(m['year'])==int(year):matches.append(m)
+            except (ValueError,KeyError,TypeError):continue
+        if not matches or len({float(m['value']) for m in matches})!=1:return None
+        return matches[0]
     def put(self,p):
         p=dict(p); p['doi']=canonical_doi(p['doi']); p['fetched_at']=datetime.now().isoformat(timespec='seconds')
         with self.db() as c:
@@ -146,6 +157,46 @@ class Store:
     def tokens(self):
         with self.db() as c: row=c.execute('SELECT tokens FROM usage WHERE day=?',(date.today().isoformat(),)).fetchone()
         return row[0] if row else 0
+    def collections(self):
+        with self.db() as c:
+            return [dict(r) for r in c.execute('SELECT c.id,c.name,count(pc.doi) AS count FROM collections c LEFT JOIN paper_collections pc ON pc.collection_id=c.id GROUP BY c.id ORDER BY c.name')]
+    def save_collection(self,name,collection_id=None):
+        name=name.strip()
+        if not 1<=len(name)<=80:raise ValueError('分类名称需为 1–80 个字符。')
+        with self.db() as c:
+            if any(r['name'].casefold()==name.casefold() and r['id']!=collection_id for r in c.execute('SELECT * FROM collections')):raise ValueError('分类名称已存在。')
+            if collection_id is None:return c.execute('INSERT INTO collections(name) VALUES(?)',(name,)).lastrowid
+            c.execute('UPDATE collections SET name=? WHERE id=?',(name,collection_id));return collection_id
+    def delete_collection(self,collection_id):
+        with self.db() as c:
+            c.execute('DELETE FROM paper_collections WHERE collection_id=?',(collection_id,));c.execute('DELETE FROM collections WHERE id=?',(collection_id,))
+    def memberships(self):
+        with self.db() as c:rows=c.execute('SELECT * FROM paper_collections').fetchall()
+        result={}
+        for r in rows:result.setdefault(r['doi'],set()).add(r['collection_id'])
+        return result
+    def assign_collection(self,dois,collection_id,remove=False):
+        with self.db() as c:
+            if not c.execute('SELECT id FROM collections WHERE id=?',(collection_id,)).fetchone():raise ValueError('分类不存在。')
+            for doi in dois:
+                if not c.execute('SELECT doi FROM papers WHERE doi=?',(doi,)).fetchone():raise ValueError('文献不存在。')
+                if remove:c.execute('DELETE FROM paper_collections WHERE doi=? AND collection_id=?',(doi,collection_id))
+                else:c.execute('INSERT OR IGNORE INTO paper_collections VALUES(?,?)',(doi,collection_id))
+    def merge_papers(self,source_doi,target_doi):
+        if source_doi==target_doi:return
+        with self.db() as c:
+            source=c.execute('SELECT * FROM papers WHERE doi=?',(source_doi,)).fetchone();target=c.execute('SELECT * FROM papers WHERE doi=?',(target_doi,)).fetchone()
+            if not source or not target:raise ValueError('合并记录不存在。')
+            old=json.loads(source['payload']);p=json.loads(target['payload'])
+            attachments=list(dict.fromkeys([x for x in [target['pdf'],source['pdf'],*p.get('pdf_alternates',[]),*old.get('pdf_alternates',[])] if x]))
+
+            if not target['pdf'] and source['pdf'] and old.get('pdf_sha256'):p['pdf_sha256']=old['pdf_sha256']
+            p['pdf_alternates']=attachments[1:];p['merged_ids']=list(dict.fromkeys(p.get('merged_ids',[])+[source_doi]))
+            notes='\n'.join(dict.fromkeys(x for x in [target['note'],source['note']] if x))
+            c.execute('UPDATE papers SET payload=?,pdf=?,seen=?,favorite=?,notified=?,note=? WHERE doi=?',
+                      (json.dumps(p,ensure_ascii=False),attachments[0] if attachments else '',max(source['seen'],target['seen']),max(source['favorite'],target['favorite']),max(source['notified'],target['notified']),notes,target_doi))
+            c.execute('INSERT OR IGNORE INTO paper_collections SELECT ?,collection_id FROM paper_collections WHERE doi=?',(target_doi,source_doi))
+            c.execute('DELETE FROM paper_collections WHERE doi=?',(source_doi,));c.execute('DELETE FROM papers WHERE doi=?',(source_doi,))
     def add_usage(self,n):
         with self.db() as c: c.execute('INSERT INTO usage(day,tokens,calls) VALUES(?,?,1) ON CONFLICT(day) DO UPDATE SET tokens=tokens+excluded.tokens,calls=calls+1',(date.today().isoformat(),int(n)))
     def daily_budget(self):
