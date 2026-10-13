@@ -33,17 +33,26 @@ def main():
                     def json(self,system,payload,max_tokens):
                         return {'id':payload['id'],'zh':'完整中文译文：'+payload['text'],'items':[{'kind':'word','quote':'electrodeposition','ipa':'/ɪˌlektroʊˌdepəˈzɪʃən/','zh':'电沉积'},
                             {'kind':'phrase','quote':'recovery yield','ipa':'','zh':'回收率'}]}
-                result=MarginAnnotator(store,client=LocalClient()).run(pdf)
+                result=MarginAnnotator(store,client=LocalClient()).run(pdf,interactive=True)
                 from pdf_process import run_margin_process
                 import threading
-                result=run_margin_process(store,pdf,threading.Event(),lambda message:None)
+                result=run_margin_process(store,pdf,threading.Event(),lambda message:None,interactive=True)
                 w.tabs.setCurrentIndex(2);w.load_pdf(str(pdf));w.margin_done(result);app.processEvents();w.fit_width();app.processEvents();w.grab().save(str(dest/'exe_reader.png'))
                 w.zoom.setValue(100);first_width=w.pdf_label.pixmap().width();w.change_zoom(50);assert w.pdf_label.pixmap().width()>first_width
                 w.fit_width()
-                with fitz.open(result['pdf']) as output:output[0].get_pixmap(matrix=fitz.Matrix(1.3,1.3)).save(str(dest/'margin_preview.png'))
+                assert len(w.source_doc)==1 and w.study_entries
+                i,rect=next((i,r) for i,r in w.pdf_label.targets if w.study_entries[i]['kind']=='word')
+                w.show_study_note(w.pdf_label.hit_test(rect.center()));assert '电沉积' in w.note_panel.toPlainText()
+                w.grab().save(str(dest/'exe_reader.png'))
+                from study_package import export_package,import_package
+                package=dest/'smoke.mdstudy';export_package(store,pdf,package)
+                receiver=Store(dest/'receiver');shared=import_package(receiver,package)
+                assert shared['added']==2
+                received=run_margin_process(receiver,pdf,threading.Event(),lambda message:None,interactive=True)
+                assert received['paragraphs']==2 and receiver.tokens()==0
                 encrypted=protect('local-self-test');assert unprotect(encrypted)=='local-self-test'
                 report={'ok':True,'native_qt':True,'pages':w.tabs.count(),'version':VERSION,'dpapi_roundtrip':True,
-                        'margin_export':result['audit'],'isolated_pdf_process':True,'zoom':True,'daily_limit':store.settings()['daily_token_limit']}
+                        'interactive_reader':True,'original_pages':len(w.source_doc),'hover_mapping':True,'portable_package':True,'package_receiver_tokens':receiver.tokens(),'isolated_pdf_process':True,'zoom':True,'daily_limit':store.settings()['daily_token_limit']}
                 if args.check_api:
                     from services import DeepSeek
                     report['live_api_models']=DeepSeek(store).models()

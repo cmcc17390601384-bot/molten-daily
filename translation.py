@@ -80,7 +80,7 @@ def extract_document(path):
         if doc.needs_pass: raise ValueError('请先用合法密码解锁 PDF，再导入。')
         if doc.page_count>100: raise ValueError('本版面向研究论文，单次最多 100 页；请拆分长文档。')
         for pi,page in enumerate(doc):
-            raw=page.get_text('dict'); blocks=[]
+            raw=page.get_text('dict',flags=fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_IMAGES); blocks=[]
             for b in raw['blocks']:
                 if b.get('type')!=0: continue
                 lines=[]

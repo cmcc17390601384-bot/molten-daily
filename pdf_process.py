@@ -4,7 +4,7 @@ import time
 from core import Store,safe_error
 from services import Cancelled
 
-def _margin_child(root,path,events,cancel,export_cache=None):
+def _margin_child(root,path,events,cancel,export_cache=None,interactive=False):
     try:
         from margins import MarginAnnotator,export_margins
         store=Store(root)
@@ -22,14 +22,14 @@ def _margin_child(root,path,events,cancel,export_cache=None):
             cache=Path(export_cache);state=json.loads(cache.read_text('utf-8'))
             progress('所有段落已缓存，正在生成左右留白 PDF…')
             result=dict(folder=str(cache.parent),**export_margins(state,cache.parent,cancel,progress))
-        else:result=MarginAnnotator(store,cancel,progress).run(path)
+        else:result=MarginAnnotator(store,cancel,progress).run(path,interactive=interactive)
         events.send(('result',result))
     except BaseException as error:events.send(('error',safe_error(error)))
     finally:events.close()
 
-def run_margin_process(store,path,cancel,progress,export_cache=None,stall_seconds=120):
+def run_margin_process(store,path,cancel,progress,export_cache=None,stall_seconds=120,interactive=False):
     ctx=mp.get_context('spawn');events,child_events=ctx.Pipe();child_cancel=ctx.Event()
-    child=ctx.Process(target=_margin_child,args=(str(store.root),str(path),child_events,child_cancel,export_cache),daemon=True)
+    child=ctx.Process(target=_margin_child,args=(str(store.root),str(path),child_events,child_cancel,export_cache,interactive),daemon=True)
     child.start();child_events.close();last=time.monotonic();cancel_at=None;phase='read';finished=False
     try:
         while True:

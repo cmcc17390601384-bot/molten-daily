@@ -23,14 +23,16 @@ def link_pdf(store,doi,path):
 
 def import_pdf(store,path):
     info=extract_document(path)
-    existing=next((p for p in store.papers() if p.get('pdf_sha256')==info['hash']),None)
-    if existing:link_pdf(store,existing['doi'],path);return store.paper(existing['doi'])
+    existing=next((p for p in store.papers(include_deleted=True) if p.get('pdf_sha256')==info['hash']),None)
+    if existing:
+        store.restore_papers([existing['doi']]);link_pdf(store,existing['doi'],path);return store.paper(existing['doi'])
     with fitz.open(path) as doc:title=(doc.metadata.get('title') or Path(path).stem).strip()
     key='local:'+info['hash'];store.put(dict(doi=key,title=title,journal='本地导入 / 题录待补全',issn=[],date='',source='本地 PDF',pages=info['page_count'],doi_candidates=doi_candidates(path)))
     link_pdf(store,key,path);return store.paper(key)
 
 def reconcile(store,old_doi,verified):
     store.put(verified)
+    store.restore_papers([verified['doi']])
     if old_doi!=verified['doi']:store.merge_papers(old_doi,verified['doi'])
     return store.paper(verified['doi'])
 

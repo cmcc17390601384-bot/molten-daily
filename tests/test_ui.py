@@ -9,7 +9,7 @@ import threading
 def test_simple_native_workflow_and_zoom(tmp_path):
     app=QApplication.instance() or QApplication([]);store=Store(tmp_path/'data');store.put(dict(SEEDS[0],date=date.today().isoformat()))
     w=Window(store,smoke=True);w.show();QTest.qWait(70)
-    assert w.tabs.count()==4 and [w.tabs.tabText(i) for i in range(4)]==['找文献','图书馆','PDF 留白精读','设置']
+    assert w.tabs.count()==4 and [w.tabs.tabText(i) for i in range(4)]==['找文献','图书馆','交互精读','设置']
     assert w.lib_table.rowCount()==1
     assert w.queries.toPlainText().splitlines()==store.settings()['queries']
     w.lib_table.selectRow(0);app.processEvents();assert w.selected

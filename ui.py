@@ -80,6 +80,8 @@ class Window(LibraryUI,QMainWindow):
     def __init__(self,store=None,smoke=False):
         super().__init__();self.store=store or Store();self.smoke=smoke;self.worker=None;self.cancel_event=None
         self.source_doc=None;self.pdf_path='';self.margin_output='';self.selected=None;self.page_no=0;self.want_quit=False;self.fit_mode=True
+        self.study_state={};self.study_entries=[];self.render_key=None
+        self.resize_timer=QTimer(self);self.resize_timer.setSingleShot(True);self.resize_timer.timeout.connect(self.fit_width)
         self.setWindowTitle('文献精读 · '+VERSION);self.setWindowIcon(icon());self.resize(1440,950);self.setMinimumSize(1050,720);self.setStyleSheet(STYLE)
         root=QWidget();self.setCentralWidget(root);layout=QVBoxLayout(root);layout.setContentsMargins(22,18,22,16)
         layout.addWidget(label('文献精读','heading'))
@@ -128,16 +130,29 @@ class Window(LibraryUI,QMainWindow):
         row.addStretch();row.addWidget(button('打开图书馆',self.show_library));v.addLayout(row)
         self.lib_table.cellDoubleClicked.connect(lambda *_:self.open_reader_selected())
     def make_reader(self):
-        v=self.page('PDF 留白精读');row=QHBoxLayout()
+        v=self.page('交互精读');row=QHBoxLayout()
         self.import_btn=button('打开新 PDF',self.import_pdf);row.addWidget(self.import_btn)
-        self.generate_btn=button('生成 / 继续留白精读',self.annotate_margins,True);row.addWidget(self.generate_btn)
-        self.export_btn=button('导出留白 PDF',self.export_pdf);row.addWidget(self.export_btn);row.addWidget(button('返回图书馆',self.show_library));row.addStretch();self.pdf_title=label('尚未导入 PDF','muted');row.addWidget(self.pdf_title);v.addLayout(row)
-        row=QHBoxLayout();self.view_kind=QComboBox();self.view_kind.addItems(['原版 PDF','留白精读 PDF']);self.view_kind.currentIndexChanged.connect(self.switch_pdf);row.addWidget(self.view_kind)
+        self.generate_btn=button('生成 / 继续精读',self.annotate_margins,True);row.addWidget(self.generate_btn)
+        self.package_btn=button('精读包',lambda:None);menu=QMenu(self.package_btn)
+        menu.addAction('导入精读包…').triggered.connect(self.import_study_package)
+        self.package_export_action=menu.addAction('导出精读包，分享给他人…');self.package_export_action.triggered.connect(self.export_study_package)
+        self.package_btn.setMenu(menu);row.addWidget(self.package_btn)
+        self.export_btn=button('导出留白 PDF',self.export_pdf);self.export_btn.hide()
+        row.addWidget(button('返回图书馆',self.show_library));row.addStretch();self.pdf_title=label('尚未导入 PDF','muted');row.addWidget(self.pdf_title);v.addLayout(row)
+        row=QHBoxLayout();self.view_kind=QComboBox();self.view_kind.addItem('原版 PDF');self.view_kind.hide()
         row.addWidget(button('上一页',lambda:self.move_page(-1)));self.page_label=label('0 / 0');row.addWidget(self.page_label);row.addWidget(button('下一页',lambda:self.move_page(1)));row.addStretch()
         row.addWidget(button('−',lambda:self.change_zoom(-10)));self.zoom=QSpinBox();self.zoom.setRange(25,400);self.zoom.setSuffix(' %');self.zoom.setValue(100);self.zoom.valueChanged.connect(self.zoom_changed);row.addWidget(self.zoom)
         row.addWidget(button('+',lambda:self.change_zoom(10)));row.addWidget(button('适合宽度',self.fit_width));row.addWidget(button('100%',lambda:self.zoom.setValue(100)));v.addLayout(row)
-        self.pdf_area=PdfArea();self.pdf_area.setAlignment(Qt.AlignCenter);self.pdf_area.setWidgetResizable(False);self.pdf_label=QLabel();self.pdf_label.setAlignment(Qt.AlignCenter);self.pdf_area.setWidget(self.pdf_label);self.pdf_area.zoomed.connect(self.change_zoom);v.addWidget(self.pdf_area,1)
-        self.reader_status=label('左侧整段中文，右侧专业词 / 短语 / 长难句及音标。内容过多自动续页；Ctrl + 滚轮缩放。','muted');v.addWidget(self.reader_status)
+        from study_reader import StudyPage
+        self.reader_splitter=QSplitter(Qt.Horizontal)
+        def side(title):
+            box=QWidget();layout=QVBoxLayout(box);layout.setContentsMargins(0,0,0,0);layout.addWidget(label(title,'muted'));browser=QTextBrowser();browser.setMinimumWidth(170);layout.addWidget(browser,1);return box,browser
+        left,self.note_panel=side('词句释义 · 音标');right,self.translation_panel=side('所属段落 · 完整中文翻译')
+        self.pdf_area=PdfArea();self.pdf_area.setAlignment(Qt.AlignCenter);self.pdf_area.setWidgetResizable(False);self.pdf_area.setMinimumWidth(300)
+        self.pdf_label=StudyPage();self.pdf_label.setAlignment(Qt.AlignCenter);self.pdf_label.hovered.connect(self.show_study_note);self.pdf_area.setWidget(self.pdf_label);self.pdf_area.zoomed.connect(self.change_zoom)
+        for widget in (left,self.pdf_area,right):self.reader_splitter.addWidget(widget)
+        self.reader_splitter.setChildrenCollapsible(False);self.reader_splitter.setSizes([260,770,310]);self.reader_splitter.splitterMoved.connect(lambda *_:self.resize_timer.start(120) if self.fit_mode else None);v.addWidget(self.reader_splitter,1)
+        self.reader_status=label('鼠标移到高亮处：左侧词句释义，右侧整段翻译。黄色：词；蓝色：短语；绿色：长难句。拖动分隔线调整宽度；Ctrl + 滚轮缩放。','muted');v.addWidget(self.reader_status)
     def make_settings(self):
         v=self.page('设置');scroll=QScrollArea();scroll.setWidgetResizable(True);content=QWidget();form=QFormLayout(content);form.setSpacing(14);s=self.store.settings()
         from providers import PROVIDERS,profiles
@@ -218,6 +233,7 @@ class Window(LibraryUI,QMainWindow):
         self.store.budget_handler=None;self.tabs.widget(3).setEnabled(True);self.tabs.widget(1).setEnabled(True);self.tabs.widget(0).setEnabled(True);self.topic_input.setEnabled(True);self.view_kind.setEnabled(True)
         for b in (self.search_btn,self.generate_btn,self.import_btn):b.setEnabled(True)
         self.progress.hide();self.cancel_btn.hide();self.refresh()
+        if self.source_doc and getattr(self,'study_cache',None):self.reload_study();self.render_page()
         if self.want_quit:self.close()
     def job_error(self,text):
         self.status.setText(text);self.store.event('任务提示',text)
@@ -292,18 +308,48 @@ class Window(LibraryUI,QMainWindow):
         except Exception as e:self.job_error(safe_error(e))
     def load_pdf(self,path,title=''):
         from margins import cache_folder
-        doc=extract_document(path);self.pdf_path=str(Path(path).resolve());self.pdf_title.setText(title or Path(path).name);self.store.update_settings(last_pdf=self.pdf_path)
-        folder=cache_folder(self.store,doc);output=folder/'页边精读批注_原版左右留白.pdf';self.margin_output=str(output) if output.exists() else ''
-        self.view_kind.blockSignals(True);self.view_kind.setCurrentIndex(1 if self.margin_output else 0);self.view_kind.blockSignals(False);self.switch_pdf();self.update_actions()
-        cache=folder/'margins.json'
-        if cache.exists():
-            st=json.loads(cache.read_text('utf-8'));self.status.setText(f'已缓存 {len(st.get("results",{}))} 段；点击“生成 / 继续”从未完成处处理。')
+        with open(path,'rb') as stream:digest=hashlib.file_digest(stream,'sha256').hexdigest()
+        self.pdf_path=str(Path(path).resolve());self.pdf_title.setText(title or Path(path).name);self.store.update_settings(last_pdf=self.pdf_path)
+        self.study_cache=cache_folder(self.store,{'hash':digest})/'margins.json';self.study_hash=digest;self.reload_study();self.switch_pdf();self.update_actions()
+        self.status.setText(f'已缓存 {len(self.study_state.get("results",{}))} 段；悬停高亮阅读，点击“生成 / 继续精读”补齐未完成段落。')
+    def export_study_package(self):
+        if not self.pdf_path:return
+        target,_=QFileDialog.getSaveFileName(self,'分享精读包（不含原文 PDF 和 API 密钥）',Path(self.pdf_path).stem+'.mdstudy','精读包 (*.mdstudy)')
+        if not target:return
+        try:
+            from study_package import export_package
+            result=export_package(self.store,self.pdf_path,target)
+            self.status.setText(f'已导出 {result["paragraphs"]} 段精读。对方导入精读包并打开同一份 PDF，即可免翻译阅读。')
+        except Exception as e:self.job_error(safe_error(e))
+    def import_study_package(self):
+        path,_=QFileDialog.getOpenFileName(self,'导入精读包','','精读包 (*.mdstudy)')
+        if not path:return
+        try:
+            from study_package import import_package,pdf_hash
+            result=import_package(self.store,path);matched=''
+            candidates=[self.pdf_path]+[p.get('pdf','') for p in self.store.papers() if p.get('pdf_sha256')==result['hash']]
+            for candidate in dict.fromkeys(candidates):
+                if candidate and Path(candidate).is_file() and pdf_hash(candidate)==result['hash']:matched=candidate;break
+            if matched:self.load_pdf(matched);self.tabs.setCurrentIndex(2)
+            self.status.setText(f'精读包已导入：新增 {result["added"]} 段，保留本地 {result["kept"]} 段。'+('已匹配原文，直接悬停阅读，无需再次翻译。' if matched else '打开对应的同一份 PDF 后自动套用；文件名可以不同。'))
+            self.update_actions()
+        except Exception as e:self.job_error(safe_error(e))
+    def reload_study(self):
+        self.study_state={}
+        if getattr(self,'study_cache',None) and self.study_cache.exists():
+            try:
+                state=json.loads(self.study_cache.read_text('utf-8'))
+                if state.get('document',{}).get('hash')==self.study_hash:self.study_state=state
+            except (OSError,ValueError):self.status.setText('精读缓存读取失败；原文仍可阅读。')
+        self.render_key=None
+    def show_study_note(self,hits):
+        from study_reader import panels
+        left,right=panels(self.study_entries,hits);self.note_panel.setHtml(left);self.translation_panel.setHtml(right)
     def switch_pdf(self,*_):
-        path=self.margin_output if self.view_kind.currentIndex()==1 else self.pdf_path
-        if not path:
-            self.view_kind.blockSignals(True);self.view_kind.setCurrentIndex(0);self.view_kind.blockSignals(False);self.status.setText('尚未生成留白 PDF，请点击“生成 / 继续”。');return
+        path=self.pdf_path
+        if not path:return
         if self.source_doc:self.source_doc.close()
-        self.source_doc=fitz.open(path);self.page_no=0;self.fit_width()
+        self.source_doc=fitz.open(path);self.render_key=None;self.page_no=0;self.fit_width()
     def fit_width(self):
         self.fit_mode=True
         if self.source_doc:
@@ -315,24 +361,30 @@ class Window(LibraryUI,QMainWindow):
         if self.source_doc:self.page_no=max(0,min(len(self.source_doc)-1,self.page_no+n));self.render_page()
     def render_page(self,*_):
         if not self.source_doc:return
-        p=self.source_doc[self.page_no];scale=self.zoom.value()/100*1.3333
-        scale=min(scale,(18000000/(p.rect.width*p.rect.height))**.5)
+        p=self.source_doc[self.page_no];display_scale=self.zoom.value()/100*1.3333
+        scale=min(display_scale,(8000000/(p.rect.width*p.rect.height))**.5)
+        key=(self.pdf_path,self.page_no,round(display_scale,6))
+        if key==self.render_key:return
+        self.render_key=key
         pix=p.get_pixmap(matrix=fitz.Matrix(scale,scale),alpha=False);im=QImage(pix.samples,pix.width,pix.height,pix.stride,QImage.Format_RGB888).copy()
-        pm=QPixmap.fromImage(im);self.pdf_label.setPixmap(pm);self.pdf_label.resize(pm.size());self.page_label.setText(f'{self.page_no+1} / {len(self.source_doc)}')
+        pm=QPixmap.fromImage(im);self.pdf_label.setPixmap(pm);self.pdf_label.resize(round(p.rect.width*display_scale),round(p.rect.height*display_scale));self.page_label.setText(f'{self.page_no+1} / {len(self.source_doc)}')
+        from study_reader import page_notes
+        self.study_entries=page_notes(self.study_state,self.page_no);self.pdf_label.set_notes(self.study_entries,p,display_scale)
+        first=next((i for i,n in enumerate(self.study_entries) if n['kind']=='paragraph'),None)
+        self.show_study_note((first,) if first is not None else ())
     def resizeEvent(self,event):
         super().resizeEvent(event)
-        if hasattr(self,'zoom') and self.fit_mode:QTimer.singleShot(0,self.fit_width)
+        if hasattr(self,'zoom') and self.fit_mode:self.resize_timer.start(120)
     def annotate_margins(self):
         if not self.pdf_path:self.status.setText('请先导入 PDF。');return
         if not self.save_settings():return
         path=self.pdf_path
         self.view_kind.setCurrentIndex(0)  # Release the previous output PDF before replacing it.
         from pdf_process import run_margin_process
-        self.run_job('恢复缓存并生成留白精读…',lambda c,p:run_margin_process(self.store,path,c,p),self.margin_done)
+        self.run_job('恢复缓存并生成交互精读…',lambda c,p:run_margin_process(self.store,path,c,p,interactive=True),self.margin_done)
     def margin_done(self,r):
-        self.margin_output=r['pdf'];self.view_kind.blockSignals(True);self.view_kind.setCurrentIndex(1);self.view_kind.blockSignals(False);self.switch_pdf();self.update_actions();a=r['audit']
-        self.status.setText(f'完成：{a["categories"]["paragraph"]} 段译文、{a["items"]-a["categories"]["paragraph"]} 条批注。已在软件内打开，可缩放或导出。')
-        if a['warnings']:self.reader_status.setText('；'.join(a['warnings']))
+        self.reload_study();self.render_page();self.update_actions()
+        self.status.setText(f'精读已就绪：{len(self.study_state.get("results",{}))} 段已缓存，保留原文页数。移到高亮处查看释义和译文。')
     def export_pdf(self):
         if not self.margin_output:self.status.setText('请先生成留白精读 PDF。');return
         target,_=QFileDialog.getSaveFileName(self,'导出留白精读 PDF',Path(self.pdf_path).stem+'_留白精读.pdf','PDF (*.pdf)')

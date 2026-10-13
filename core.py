@@ -5,7 +5,7 @@ from ctypes import wintypes
 from datetime import date, datetime
 from pathlib import Path
 
-VERSION = '1.3.1'
+VERSION = '1.4.0'
 APP = '熔盐文献日课'
 DEFAULTS = dict(base_url='https://api.deepseek.com', model='deepseek-flash', api_secret='',
                 openalex_secret='', email='', days=90, daily_count=3, max_pages=8,
@@ -94,6 +94,9 @@ class Store:
                 CREATE TABLE IF NOT EXISTS collections(id INTEGER PRIMARY KEY,name TEXT NOT NULL UNIQUE);
                 CREATE TABLE IF NOT EXISTS paper_collections(doi TEXT NOT NULL,collection_id INTEGER NOT NULL,
                     PRIMARY KEY(doi,collection_id));''')
+            columns={r['name'] for r in c.execute('PRAGMA table_info(papers)')}
+            if 'deleted' not in columns:c.execute('ALTER TABLE papers ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0')
+            if 'deleted_at' not in columns:c.execute("ALTER TABLE papers ADD COLUMN deleted_at TEXT DEFAULT ''")
         if not (self.root/'settings.json').exists(): self.save_settings(dict(DEFAULTS))
         if not (self.root/'journal_metrics.csv').exists(): self.write_metrics(METRICS)
         settings=self.settings()
@@ -147,10 +150,24 @@ class Store:
             c.execute('INSERT INTO papers(doi,payload,added) VALUES(?,?,?) ON CONFLICT(doi) DO UPDATE SET payload=excluded.payload',
                       (p['doi'],json.dumps(p,ensure_ascii=False),date.today().isoformat()))
         return prior is None
-    def papers(self):
-        with self.db() as c: rows=c.execute('SELECT * FROM papers ORDER BY added DESC').fetchall()
-        return [dict(json.loads(r['payload']),**{k:r[k] for k in ['seen','favorite','notified','pdf','note','added']}) for r in rows]
-    def paper(self,doi): return next((p for p in self.papers() if p['doi']==doi),None)
+    @staticmethod
+    def _paper_row(r):
+        return dict(json.loads(r['payload']),**{k:r[k] for k in ['seen','favorite','notified','pdf','note','added','deleted','deleted_at']}) if r else None
+    def papers(self,include_deleted=False):
+        with self.db() as c: rows=c.execute('SELECT * FROM papers '+('' if include_deleted else 'WHERE deleted=0 ')+'ORDER BY added DESC').fetchall()
+        return [self._paper_row(r) for r in rows]
+    def paper(self,doi,include_deleted=False):
+        with self.db() as c:r=c.execute('SELECT * FROM papers WHERE doi=?'+('' if include_deleted else ' AND deleted=0'),(canonical_doi(doi),)).fetchone()
+        return self._paper_row(r)
+    def delete_papers(self,dois):return self._set_deleted(dois,True)
+    def restore_papers(self,dois):return self._set_deleted(dois,False)
+    def _set_deleted(self,dois,deleted):
+        count=0
+        with self.db() as c:
+            for doi in set(dois):
+                count+=c.execute('UPDATE papers SET deleted=?,deleted_at=? WHERE doi=? AND deleted!=?',
+                    (int(deleted),datetime.now().isoformat(timespec='seconds') if deleted else '',canonical_doi(doi),int(deleted))).rowcount
+        return count
     def set_flag(self,doi,key,value):
         if key not in {'seen','favorite','notified','pdf','note'}: raise ValueError(key)
         with self.db() as c: c.execute(f'UPDATE papers SET {key}=? WHERE doi=?',(value,doi))
@@ -159,7 +176,7 @@ class Store:
         return row[0] if row else 0
     def collections(self):
         with self.db() as c:
-            return [dict(r) for r in c.execute('SELECT c.id,c.name,count(pc.doi) AS count FROM collections c LEFT JOIN paper_collections pc ON pc.collection_id=c.id GROUP BY c.id ORDER BY c.name')]
+            return [dict(r) for r in c.execute('SELECT c.id,c.name,count(p.doi) AS count FROM collections c LEFT JOIN paper_collections pc ON pc.collection_id=c.id LEFT JOIN papers p ON p.doi=pc.doi AND p.deleted=0 GROUP BY c.id ORDER BY c.name')]
     def save_collection(self,name,collection_id=None):
         name=name.strip()
         if not 1<=len(name)<=80:raise ValueError('分类名称需为 1–80 个字符。')

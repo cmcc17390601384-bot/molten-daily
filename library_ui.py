@@ -1,7 +1,7 @@
 """Library, attachment and citation actions for the desktop window."""
 from pathlib import Path
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QHBoxLayout,QLineEdit,QComboBox,QAbstractItemView,QTableWidgetItem,QHeaderView,QFileDialog,QInputDialog,QApplication,QMenu,QDialog,QFormLayout,QDialogButtonBox,QVBoxLayout,QLabel)
+from PySide6.QtWidgets import (QHBoxLayout,QLineEdit,QComboBox,QAbstractItemView,QTableWidgetItem,QHeaderView,QFileDialog,QInputDialog,QApplication,QMenu,QDialog,QFormLayout,QDialogButtonBox,QVBoxLayout,QLabel,QMessageBox)
 from core import safe_error
 from library import import_pdf,link_pdf,reconcile
 from citations import export_records,read_records,local_attachment
@@ -11,6 +11,7 @@ class LibraryUI:
     def tab_changed(self,index):
         if index==0:self.select_paper()
         elif index==1:self.select_library()
+        elif index==2 and self.fit_mode:self.resize_timer.start(120)
         elif index==3 and self.profile_url not in self.models_seen:self.model_timer.start(300)
         self.update_actions()
     def update_actions(self):
@@ -24,9 +25,12 @@ class LibraryUI:
         can_get=single and (bool(p.get('pdf_url')) or p['doi'].startswith('10.')) and not pdf
         for name in ('search_get','library_get'):getattr(self,name).setEnabled(bool(can_get))
         self.search_doi.setEnabled(single and p.get('url','').startswith('https://'))
-        ids=self.library_ids();self.library_classify.setEnabled(bool(ids) and not busy)
-        for action,one in getattr(self,'selection_actions',[]):action.setEnabled((len(ids)==1 if one else bool(ids)) and not busy)
+        ids=self.library_ids();trash=self.category.currentData()=='trash';self.library_classify.setEnabled(bool(ids) and not busy and not trash)
+        self.library_delete.setText('恢复选中' if trash else '删除选中');self.library_delete.setEnabled(bool(ids) and not busy)
+        for action,one in getattr(self,'selection_actions',[]):action.setEnabled((len(ids)==1 if one else bool(ids)) and not busy and not trash)
         self.generate_btn.setEnabled(bool(self.pdf_path) and Path(self.pdf_path).is_file() and not busy)
+        self.package_btn.setEnabled(not busy)
+        self.package_export_action.setEnabled(bool(self.pdf_path) and Path(self.pdf_path).is_file() and bool(self.study_state.get('results')) and not busy)
         self.export_btn.setEnabled(bool(self.margin_output) and Path(self.margin_output).is_file() and not busy)
     def show_library(self):
         doi=self.selected
@@ -64,6 +68,7 @@ class LibraryUI:
         for widget in (self.library_read,self.library_get,self.library_attach,self.library_edit,self.library_classify):row.addWidget(widget)
         row.addStretch();row.addWidget(button('导入 PDF',self.batch_import));v.addLayout(row)
         row=QHBoxLayout();self.selection_actions=[]
+        self.library_delete=button('删除选中',self.delete_selected);row.addWidget(self.library_delete)
         for title,actions in [ ('题录与整理',[('DOI 补全 / 合并',self.complete_doi,True),('移出当前分类',self.unclassify,False),('收藏 / 取消',lambda:self.mark_library('favorite'),False),('标记已读',lambda:self.mark_library('seen'),False)]),
                                ('导入 / 导出',[('导入 RIS / EndNote XML',self.import_citations,None),('导出所选 / 当前分类题录',self.export_citations,None)])]:
 
@@ -77,14 +82,15 @@ class LibraryUI:
         self.refresh_categories()
     def refresh_categories(self):
         current=self.category.currentData();self.category.blockSignals(True);self.category.clear()
-        for name,key in [('全部文献','all'),('未分类','none'),('收藏','favorite'),('未读','unread')]:self.category.addItem(name,key)
+        for name,key in [('全部文献','all'),('未分类','none'),('收藏','favorite'),('未读','unread'),('回收站','trash')]:self.category.addItem(name,key)
         for c in self.store.collections():self.category.addItem(f'{c["name"]} ({c["count"]})',c['id'])
         idx=self.category.findData(current);self.category.setCurrentIndex(max(0,idx));self.category.blockSignals(False);self.refresh_library()
     def refresh_library(self,*_):
         if not hasattr(self,'library_table'):return
         selected=set(self.library_ids());key=self.category.currentData();q=self.library_filter.text().strip().casefold();members=self.store.memberships();names={c['id']:c['name'] for c in self.store.collections()}
         rows=[]
-        for p in self.store.papers():
+        for p in self.store.papers(include_deleted=key=='trash'):
+            if key=='trash' and not p['deleted']:continue
             cats=members.get(p['doi'],set())
             if key=='none' and cats or key=='favorite' and not p['favorite'] or key=='unread' and p['seen'] or isinstance(key,int) and key not in cats:continue
             if q not in (p['title']+' '+p['doi']+' '+p.get('journal','')).casefold():continue
@@ -103,6 +109,16 @@ class LibraryUI:
     def selected_ids(self):return self.library_ids() if self.tabs.currentIndex()==1 else ([self.selected] if self.selected else [])
     def select_library(self):
         ids=self.library_ids();self.selected=ids[0] if len(ids)==1 else None;self.update_actions()
+    def delete_selected(self):
+        ids=self.library_ids()
+        if not ids or (self.worker and self.worker.isRunning()):return
+        if self.category.currentData()=='trash':
+            count=self.store.restore_papers(ids);message=f'已恢复 {count} 篇文献及原分类。'
+        else:
+            answer=QMessageBox.question(self,'删除文献',f'将选中的 {len(ids)} 篇文献移入回收站？\nPDF、笔记和翻译缓存均保留，可从回收站恢复。',QMessageBox.Yes|QMessageBox.No,QMessageBox.No)
+            if answer!=QMessageBox.Yes:return
+            count=self.store.delete_papers(ids);message=f'已将 {count} 篇文献移入回收站，可恢复。'
+        self.selected=None;self.refresh();self.status.setText(message)
     def new_category(self):
         name,ok=QInputDialog.getText(self,'新建分类','分类名称')
         if ok:
@@ -180,6 +196,7 @@ class LibraryUI:
             for p in records:
                 if c.is_set():break
                 self.store.put(p)
+                self.store.restore_papers([p['doi']])
                 processed+=1
                 if isinstance(cid,int):self.store.assign_collection([p['doi']],cid)
                 for value in p.get('import_attachments',[]):

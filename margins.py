@@ -49,7 +49,7 @@ def study_parts(doc):
 class MarginAnnotator:
     def __init__(self,store,cancel=None,progress=lambda x:None,client=None):
         self.store=store;self.cancel=cancel;self.progress=progress;self.client=client or DeepSeek(store,cancel=cancel)
-    def run(self,path):
+    def run(self,path,interactive=False):
         doc=extract_document(path);parts=study_parts(doc);folder=cache_folder(self.store,doc);folder.mkdir(exist_ok=True)
         cache=folder/'margins.json'
         state=json.loads(cache.read_text('utf-8')) if cache.exists() else {'version':VERSION,'results':{},'warnings':[]}
@@ -132,7 +132,11 @@ class MarginAnnotator:
                     seen.add(item['quote'].casefold());count+=1;item['number']=f'{int(pi)+1}.{count:02d}'
                 kept.append(item)
             state['pages'][pi]=kept
-        save();self.progress('所有段落已缓存，正在生成左右留白 PDF…')
+        save()
+        if interactive:
+            self.progress('所有段落已缓存，交互精读已就绪。')
+            return {'folder':str(folder),'cache':str(cache),'interactive':True,'paragraphs':len(state['results'])}
+        self.progress('所有段落已缓存，正在生成左右留白 PDF…')
         return {'folder':str(folder),**export_margins(state,folder,self.cancel,self.progress)}
 
 
