@@ -5,7 +5,7 @@ import pytest
 from pathlib import Path
 from core import Store,SEEDS
 from library import import_pdf,link_pdf,reconcile
-from citations import export_records,read_records,word_source,temporary_citation,local_attachment
+from citations import export_records,read_records,local_attachment
 from services import cr_paper,eligibility
 from test_core import sample_pdf
 
@@ -58,12 +58,6 @@ def test_xml_import_unicode_and_entities(tmp_path):
 def test_attachment_traversal_rejected(tmp_path):
     assert local_attachment('internal-pdf://../../other.pdf',tmp_path/'ref.xml') is None
     assert local_attachment('https://example.com/test.pdf',tmp_path/'ref.xml') is None
-
-def test_word_source_escaping_and_no_invented_record_number():
-    p=paper();p['title']='Metal <salt> & uranium';tag,xml=word_source(p)
-    root=ET.fromstring(xml);assert root.find('{*}Title').text==p['title'];assert len(root.findall('.//{*}Person'))==2
-    assert word_source(p)[0]==tag and temporary_citation(p)=='{'+p['doi']+'}'
-    with pytest.raises(ValueError):word_source(dict(p,author_list=[],authors=''))
 
 def test_full_author_list_not_truncated():
     p=cr_paper(dict(DOI='10.1234/a',author=[dict(family=f'Name{i}',given='A') for i in range(30)]))

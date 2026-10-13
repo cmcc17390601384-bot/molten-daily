@@ -140,15 +140,49 @@ class Window(LibraryUI,QMainWindow):
         self.reader_status=label('左侧整段中文，右侧专业词 / 短语 / 长难句及音标。内容过多自动续页；Ctrl + 滚轮缩放。','muted');v.addWidget(self.reader_status)
     def make_settings(self):
         v=self.page('设置');scroll=QScrollArea();scroll.setWidgetResizable(True);content=QWidget();form=QFormLayout(content);form.setSpacing(14);s=self.store.settings()
+        from providers import PROVIDERS,profiles
+        self.api_profiles=profiles(s);self.profile_url=s['base_url'].rstrip('/');self.models_seen=set()
+        self.provider=QComboBox()
+        for name,url in PROVIDERS:self.provider.addItem(name,url)
+        index=self.provider.findData(self.profile_url);self.provider.setCurrentIndex(index if index>=0 else self.provider.count()-1);form.addRow('API 供应商',self.provider)
         self.base=QLineEdit(s['base_url']);form.addRow('API 地址',self.base)
         self.secret=QLineEdit();self.secret.setEchoMode(QLineEdit.Password);self.secret.setPlaceholderText('已保存，留空保持不变' if s['api_secret'] else '输入 API Key');form.addRow('API Key',self.secret)
         self.model=QComboBox();self.model.setEditable(True);self.model.addItem(s['model']);form.addRow('模型',self.model)
-        form.addRow('',button('保存并测试连接',self.test_api))
+        self.model.setPlaceholderText('检测模型后选择，或输入模型 ID')
+        self.model_status=label('从供应商实时获取模型；新模型无需升级软件。','muted');form.addRow('',self.model_status)
+        form.addRow('',button('检测 / 刷新可用模型',self.test_api))
+        self.model_timer=QTimer(self);self.model_timer.setSingleShot(True);self.model_timer.timeout.connect(self.auto_models)
+        self.provider.currentIndexChanged.connect(self.provider_changed)
+        self.base.editingFinished.connect(self.endpoint_edited)
+        self.secret.editingFinished.connect(lambda:self.model_timer.start(300) if self.secret.text().strip() else None)
         self.budget=QSpinBox();self.budget.setRange(10000,100000000);self.budget.setSingleStep(100000);self.budget.setValue(s['daily_token_limit']);form.addRow('每日 Token 基础额度',self.budget)
         self.usage=label('','muted');form.addRow('',self.usage)
         form.addRow('',label('默认每日 100 万 Token；不足时询问是否仅为今天追加 100 万。取消会暂停，已完成段落保留。此额度是软件预算，不会更改 API 账户余额。','muted'))
         scroll.setWidget(content);v.addWidget(scroll,1);v.addWidget(button('保存设置',self.save_settings,True))
-    def save_settings(self,*_):
+    def provider_changed(self,*_):
+        endpoint=self.provider.currentData()
+        if endpoint:self.switch_provider(endpoint)
+        else:
+            self.switch_provider('https://your-provider.example/v1');self.base.setFocus();self.base.selectAll()
+    def endpoint_edited(self):
+        endpoint=self.base.text().strip().rstrip('/')
+        if endpoint!=self.profile_url:self.switch_provider(endpoint)
+    def switch_provider(self,endpoint):
+        from providers import remember
+        from services import public_url
+        try:public_url(endpoint)
+        except ValueError as e:self.job_error(str(e));return
+        remember(self.api_profiles,self.profile_url,self.model.currentText(),self.secret.text().strip())
+        self.profile_url=endpoint;profile=self.api_profiles.get(endpoint,{})
+        self.provider.blockSignals(True);index=self.provider.findData(endpoint);self.provider.setCurrentIndex(index if index>=0 else self.provider.count()-1);self.provider.blockSignals(False)
+        self.base.setText(endpoint);self.secret.clear();self.secret.setPlaceholderText('已保存该供应商密钥，留空保持不变' if profile.get('api_secret') else '输入此供应商的 API Key')
+        self.model.clear();self.model.addItems(profile.get('models',[]));self.model.setCurrentText(profile.get('model',''))
+        self.model_status.setText('正在自动检测可用模型…' if profile.get('api_secret') else '填写此供应商密钥后自动检测模型。支持 /models 与 chat/completions 兼容接口。')
+        if profile.get('api_secret'):self.model_timer.start(300)
+    def auto_models(self):
+        if self.worker and self.worker.isRunning():return
+        if self.secret.text().strip() or self.api_profiles.get(self.profile_url,{}).get('api_secret'):self.test_api()
+    def save_settings(self,*_,allow_empty_model=False):
         if self.worker and self.worker.isRunning():return False
         try:
             from services import public_url
@@ -156,11 +190,14 @@ class Window(LibraryUI,QMainWindow):
             if not 1<=len(topic)<=1500:raise ValueError('请填写研究方向，最多 1500 字。')
             qs=[q.strip() for q in self.queries.toPlainText().splitlines() if q.strip()]
             if qs:qs=query_lines(qs)
+            if self.base.text().strip().rstrip('/')!=self.profile_url:self.endpoint_edited()
             s=self.store.settings();s.update(base_url=public_url(self.base.text().strip().rstrip('/')),model=self.model.currentText().strip(),
                 daily_token_limit=self.budget.value(),topic_mode='custom',research_topic=topic,queries=qs,schedule=False,
                 days=self.days.value(),min_if=self.minif.value(),metric_year=self.year.value(),max_pages=self.maxpages.value(),strict_pages=self.strict.isChecked())
-            if not s['model']:raise ValueError('请填写模型名称。')
-            if self.secret.text().strip():s['api_secret']=protect(self.secret.text().strip())
+            if not s['model'] and not allow_empty_model:raise ValueError('请先检测并选择模型，或手动填写模型 ID。')
+            from providers import remember
+            profile=remember(self.api_profiles,self.profile_url,s['model'],self.secret.text().strip())
+            s['api_secret']=profile.get('api_secret','');s['api_profiles']=self.api_profiles
             self.store.save_settings(s);self.secret.clear();self.secret.setPlaceholderText('已保存，留空保持不变' if s['api_secret'] else '输入 API Key')
             self.refresh();self.status.setText('设置已保存。');return True
         except Exception as e:self.job_error(safe_error(e));return False
@@ -290,7 +327,8 @@ class Window(LibraryUI,QMainWindow):
         if not self.save_settings():return
         path=self.pdf_path
         self.view_kind.setCurrentIndex(0)  # Release the previous output PDF before replacing it.
-        self.run_job('恢复缓存并生成留白精读…',lambda c,p:MarginAnnotator(self.store,c,p).run(path),self.margin_done)
+        from pdf_process import run_margin_process
+        self.run_job('恢复缓存并生成留白精读…',lambda c,p:run_margin_process(self.store,path,c,p),self.margin_done)
     def margin_done(self,r):
         self.margin_output=r['pdf'];self.view_kind.blockSignals(True);self.view_kind.setCurrentIndex(1);self.view_kind.blockSignals(False);self.switch_pdf();self.update_actions();a=r['audit']
         self.status.setText(f'完成：{a["categories"]["paragraph"]} 段译文、{a["items"]-a["categories"]["paragraph"]} 条批注。已在软件内打开，可缩放或导出。')
@@ -300,12 +338,24 @@ class Window(LibraryUI,QMainWindow):
         target,_=QFileDialog.getSaveFileName(self,'导出留白精读 PDF',Path(self.pdf_path).stem+'_留白精读.pdf','PDF (*.pdf)')
         if target and Path(target).resolve()!=Path(self.margin_output).resolve():shutil.copy2(self.margin_output,target);self.status.setText('PDF 已导出。')
     def test_api(self):
-        if not self.save_settings():return
+        self.model_timer.stop()
+        if self.worker and self.worker.isRunning():return
+        try:
+            from providers import remember
+            from services import public_url
+            if self.base.text().strip().rstrip('/')!=self.profile_url:self.endpoint_edited()
+            endpoint=public_url(self.base.text().strip().rstrip('/'))
+            profile=remember(self.api_profiles,endpoint,self.model.currentText().strip(),self.secret.text().strip())
+            self.store.update_settings(base_url=endpoint,model=profile['model'],api_secret=profile.get('api_secret',''),api_profiles=self.api_profiles)
+            self.secret.clear();self.secret.setPlaceholderText('已保存该供应商密钥，留空保持不变' if profile.get('api_secret') else '输入此供应商的 API Key')
+        except Exception as e:self.job_error(safe_error(e));return
         def done(models):
             current=self.model.currentText();self.model.clear();self.model.addItems(models)
-            if current in models:self.model.setCurrentText(current)
-            self.store.update_settings(model=self.model.currentText());self.status.setText('API 连接成功。')
-        self.run_job('测试 API…',lambda c,p:DeepSeek(self.store,cancel=c).models(),done)
+            self.model.setCurrentText(current if current in models else models[0])
+            self.api_profiles.setdefault(self.profile_url,{}).update(model=self.model.currentText(),models=models)
+            self.store.update_settings(model=self.model.currentText(),api_profiles=self.api_profiles);self.models_seen.add(self.profile_url)
+            self.model_status.setText(f'已实时检测到 {len(models)} 个模型；可选择或输入模型 ID。列表可见不等于所有模型都支持文本翻译。');self.status.setText('模型列表已更新；未发送翻译请求。')
+        self.run_job('正在向当前供应商获取模型列表…',lambda c,p:DeepSeek(self.store,cancel=c).models(),done)
     def import_metrics(self):
         file,_=QFileDialog.getOpenFileName(self,'导入 JIF 表','','CSV (*.csv)')
         if not file:return

@@ -1,18 +1,17 @@
 """Library, attachment and citation actions for the desktop window."""
 from pathlib import Path
-from datetime import datetime
-from PySide6.QtCore import Qt,QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QHBoxLayout,QLineEdit,QComboBox,QAbstractItemView,QTableWidgetItem,QHeaderView,QFileDialog,QInputDialog,QApplication,QMenu,QDialog,QFormLayout,QDialogButtonBox,QVBoxLayout,QLabel)
 from core import safe_error
 from library import import_pdf,link_pdf,reconcile
-from citations import export_records,read_records,local_attachment,temporary_citation
+from citations import export_records,read_records,local_attachment
 from services import Retriever
 
 class LibraryUI:
     def tab_changed(self,index):
         if index==0:self.select_paper()
         elif index==1:self.select_library()
+        elif index==3 and self.profile_url not in self.models_seen:self.model_timer.start(300)
         self.update_actions()
     def update_actions(self):
         if not hasattr(self,'export_btn'):return
@@ -52,13 +51,6 @@ class LibraryUI:
         buttons.accepted.connect(save)
         if dialog.exec()==QDialog.Accepted:
             doi=self.selected;self.refresh();self.selected=doi;self.show_library();self.status.setText('文献资料已保存。')
-    def citation_help(self):
-        from PySide6.QtWidgets import QMessageBox
-        QMessageBox.information(self,'EndNote / Word 联用',
-            '方式一：选中题录 → 发送到 EndNote → 导入目标文献库。\n复制 EndNote 临时引用，粘贴至 Word 光标处，再点击 EndNote 的 Update Citations and Bibliography。\n\n'
-            '方式二：在 Word 定位光标 → 本软件“插入 Word 引用” → “Word 参考文献表”。这会插入 Word 原生字段。\n'
-            '转为 EndNote：Word 的 EndNote 选项卡 → Export to EndNote → Export Word Citations；随后 Convert Citations and Bibliography → Convert Word Citations to EndNote。\n\n'
-            '作者、卷期和页码缺失时，请先用 DOI 补全或编辑题录。软件不自动保存或关闭 Word 文档。')
     def make_library(self):
         from ui import button,label,table
         v=self.page('图书馆');row=QHBoxLayout();self.category=QComboBox();row.addWidget(self.category)
@@ -73,8 +65,8 @@ class LibraryUI:
         row.addStretch();row.addWidget(button('导入 PDF',self.batch_import));v.addLayout(row)
         row=QHBoxLayout();self.selection_actions=[]
         for title,actions in [ ('题录与整理',[('DOI 补全 / 合并',self.complete_doi,True),('移出当前分类',self.unclassify,False),('收藏 / 取消',lambda:self.mark_library('favorite'),False),('标记已读',lambda:self.mark_library('seen'),False)]),
-                               ('导入 / 导出',[('导入 RIS / EndNote XML',self.import_citations,None),('导出题录',self.export_citations,None)]),
-                               ('EndNote / Word',[('发送到 EndNote',self.send_endnote,None),('复制 EndNote 临时引用',self.copy_endnote,True),('插入 Word 引用',self.insert_word,True),('Word 参考文献表',self.word_bibliography,None),('查看联用步骤',self.citation_help,None)])]:
+                               ('导入 / 导出',[('导入 RIS / EndNote XML',self.import_citations,None),('导出所选 / 当前分类题录',self.export_citations,None)])]:
+
             control=button(title,lambda:None);menu=QMenu(control)
             for text,fn,single in actions:
                 action=menu.addAction(text);action.triggered.connect(fn)
@@ -211,26 +203,3 @@ class LibraryUI:
                 if not Path(path).suffix:path+='.enw' if 'enw' in kind else '.ris'
                 export_records(records,path);self.status.setText(f'已导出 {len(records)} 篇题录。缺失字段写入备注，附件为本机路径。')
             except Exception as e:self.job_error(safe_error(e))
-    def send_endnote(self):
-        records=self.export_selection()
-        if not records:self.status.setText('请先选择文献。');return
-        path=self.store.root/'exports'/('EndNote_'+datetime.now().strftime('%Y%m%d_%H%M%S')+'.enw')
-        try:
-            export_records(records,path)
-            opened=QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve())))
-            self.status.setText(('已交给默认 EndNote 关联程序，请在 EndNote 选择目标库。' if opened else '未找到文件关联，请在 EndNote 通过 File > Import 导入 EndNote Import 格式。')+' 文件：'+str(path))
-        except Exception as e:self.job_error(safe_error(e))
-    def copy_endnote(self):
-        try:
-            records=self.export_selection()
-            if len(records)!=1:raise ValueError('请选择一篇论文。')
-            QApplication.clipboard().setText(temporary_citation(records[0]));self.status.setText('已复制 {DOI} 临时引用。先将题录导入 EndNote，再粘贴到 Word，点击 EndNote 的 Update Citations and Bibliography。')
-        except Exception as e:self.job_error(safe_error(e))
-    def insert_word(self):
-        from word_bridge import word_action
-        records=self.export_selection()
-        if len(records)!=1:self.status.setText('请选择一篇论文，并在 Word 中定位光标。');return
-        self.run_job('插入 Word 引用字段…',lambda c,p:word_action('cite',records[0]),lambda r:self.status.setText('已在 '+r['document']+' 插入 Word 原生引用。EndNote 可通过 Convert Word Citations to EndNote 转换。'))
-    def word_bibliography(self):
-        from word_bridge import word_action
-        self.run_job('插入 / 更新 Word 参考文献表…',lambda c,p:word_action('bibliography'),lambda r:self.status.setText('已更新 '+r['document']+' 的 Word 参考文献表；未自动保存文档。'))

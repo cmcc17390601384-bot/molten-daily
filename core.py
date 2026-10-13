@@ -5,7 +5,7 @@ from ctypes import wintypes
 from datetime import date, datetime
 from pathlib import Path
 
-VERSION = '1.3.0'
+VERSION = '1.3.1'
 APP = '熔盐文献日课'
 DEFAULTS = dict(base_url='https://api.deepseek.com', model='deepseek-flash', api_secret='',
                 openalex_secret='', email='', days=90, daily_count=3, max_pages=8,

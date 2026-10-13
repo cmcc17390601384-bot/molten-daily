@@ -54,8 +54,8 @@ class DeepSeek:
         return {'Authorization':'Bearer '+key,'Content-Type':'application/json','User-Agent':'MoltenDaily/1.0'}
     def models(self):
         d=request_json(self.s['base_url'].rstrip('/')+'/models',headers=self.headers(),cancel=self.cancel)
-        models=[x['id'] for x in d.get('data',[]) if isinstance(x,dict) and isinstance(x.get('id'),str)]
-        if not models: raise ApiError('模型列表为空。')
+        models=list(dict.fromkeys(x['id'].strip() for x in d.get('data',[]) if isinstance(x,dict) and isinstance(x.get('id'),str) and x['id'].strip()))
+        if not models: raise ApiError('供应商未返回有效模型列表；可检查接口地址、密钥权限，或手动输入模型 ID。')
         return models
     def json(self,system,payload,max_tokens=5000):
         approx=(len(system)+len(json.dumps(payload,ensure_ascii=False)))//2+max_tokens

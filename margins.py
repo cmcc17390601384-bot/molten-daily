@@ -10,7 +10,7 @@ from services import DeepSeek,check_cancel,ApiError
 VERSION='margin-v3-paragraph'
 COLORS={'word':(.82,.55,.03),'phrase':(.1,.38,.8),'sentence':(.06,.52,.36),'paragraph':(.4,.25,.65)}
 LABELS={'word':'专业词','phrase':'短语','sentence':'长难句','paragraph':'整段翻译'}
-CSS='body {font-family:sans-serif;font-size:10pt;line-height:1.4;color:#183f3b;} p{margin:0 0 4pt;} .en{color:#354d56;} .ipa{color:#6a7277;font-size:9pt;} .head{color:#08786a;font-weight:bold;}'
+CSS='body {margin:0;font-family:sans-serif;font-size:10pt;line-height:1.4;color:#183f3b;} p{margin:0 0 4pt;} .en{color:#354d56;} .ipa{color:#6a7277;font-size:9pt;} .head{color:#08786a;font-weight:bold;}'
 
 def norm(text):return re.sub(r'\s+',' ',str(text)).strip().replace('ﬁ','fi').replace('ﬂ','fl')
 
@@ -133,7 +133,7 @@ class MarginAnnotator:
                 kept.append(item)
             state['pages'][pi]=kept
         save();self.progress('所有段落已缓存，正在生成左右留白 PDF…')
-        return {'folder':str(folder),**export_margins(state,folder,self.cancel)}
+        return {'folder':str(folder),**export_margins(state,folder,self.cancel,self.progress)}
 
 
 def note_html(item):
@@ -143,20 +143,23 @@ def note_html(item):
         '<p class="ipa">'+e(item['ipa'])+'</p>' if item['ipa'] else '')+'<p>'+scientific_html(item['zh'])+'</p>'
 
 
-def export_margins(state,folder,cancel=None):
-    source=fitz.open(state['document']['source']);out=fitz.open()
+def export_margins(state,folder,cancel=None,progress=lambda message:None):
+    source=fitz.open(state['document']['source']);out=fitz.open();layouts={}
+    overlay_path=Path(folder)/'margin_layout.tmp.pdf'
     report={'source_sha256':state['document']['hash'],'source_pages':len(source),'items':0,'categories':dict.fromkeys(LABELS,0),
             'warnings':list(state.get('warnings',[])),'mapping':[]}
     try:
+        total=sum(len(items) for items in state['pages'].values())
         for pi,src in enumerate(source):
             check_cancel(cancel);items=state['pages'].get(str(pi),[]);margin=300;top=42
+            progress(f'排版原文 {pi+1}/{len(source)} 页 · 已完成 {report["items"]}/{total} 条译文与批注')
             h=max(842,src.rect.height+84);width=src.rect.width+2*margin;pages=[];badges={}
             def ensure_page(index):
                 while len(pages)<=index:
                     p=out.new_page(width=width,height=h);p.show_pdf_page(fitz.Rect(margin,top,margin+src.rect.width,top+src.rect.height),source,pi)
                     p.draw_line((margin-9,36),(margin-9,h-32),color=(.8,.87,.85));p.draw_line((margin+src.rect.width+9,36),(margin+src.rect.width+9,h-32),color=(.8,.87,.85))
-                    p.insert_htmlbox(fitz.Rect(18,8,width-18,34),f'<b>原文第 {pi+1} 页 · 留白精读</b>　左侧：整段译文　右侧：编号词汇 / 短语 / 长难句',css=CSS)
-                    p.insert_htmlbox(fitz.Rect(18,h-27,width-18,h-5),'原图与公式保留 · AI 语境翻译和音标 · 内容较多时重复原页续排，不缩小文字',css=CSS)
+                    layouts[p.number]=[(fitz.Rect(18,8,width-18,34),f'<b>原文第 {pi+1} 页 · 留白精读</b>　左侧：整段译文　右侧：编号词汇 / 短语 / 长难句'),
+                        (fitz.Rect(18,h-27,width-18,h-5),'原图与公式保留 · AI 语境翻译和音标 · 内容较多时重复原页续排，不缩小文字')]
                     pages.append(p.number)
                 return out[pages[index]]
             ensure_page(0)
@@ -165,14 +168,17 @@ def export_margins(state,folder,cancel=None):
                 selected=[i for i in items if (i['kind']=='paragraph')==(column==0)]
                 for item in selected:
                     check_cancel(cancel)
+                    progress(f'排版原文 {pi+1}/{len(source)} 页 · {report["items"]+1}/{total} 条 · 已生成 {len(out)} 页')
                     pieces=list(zip_longest(list(chunks(item.get('quote',''),400)),list(chunks(item['zh'],420)),fillvalue=''))
                     for part_index,(quote,zh) in enumerate(pieces):
                         part=dict(item,quote=quote,zh=zh,number=item['number']+(' 续' if part_index else ''),ipa=item.get('ipa','') if not part_index else '')
                         x=18 if column==0 else margin+src.rect.width+22
                         for attempt in range(2):
                             page=ensure_page(page_index)
-                            spare,_=page.insert_htmlbox(fitz.Rect(x,y,x+260,h-38),note_html(part),css=CSS,scale_low=1)
-                            if spare>=0:y=h-38-spare+14;break
+                            rect=fitz.Rect(x,y,x+260,h-38);markup=note_html(part)
+                            story=fitz.Story(html=markup,user_css=CSS);more,filled=story.place(rect)
+                            if not more:
+                                layouts[page.number].append((rect,markup));y=fitz.Rect(filled).y1+14;break
                             page_index+=1;y=48
                         else:raise ValueError('批注无法排版，已缓存全部段落。')
                         color=COLORS[item['kind']]
@@ -195,7 +201,32 @@ def export_margins(state,folder,cancel=None):
                             page.insert_text((r.x0,max(top+6,r.y0-3)),item['number'],fontsize=6,color=color)
                         report['mapping'].append({'number':item['number'],'source_page':pi+1,'output_page':page.number+1,'kind':item['kind']})
                     report['items']+=1;report['categories'][item['kind']]+=1
-        dest=Path(folder)/'页边精读批注_原版左右留白.pdf';tmp=dest.with_suffix('.tmp.pdf');out.save(tmp,garbage=4,deflate=True);tmp.replace(dest)
+        # One shared PDF writer reuses font resources across every note and page.
+        # insert_htmlbox creates a separate embedded-font PDF for each fragment.
+        with fitz.DocumentWriter(str(overlay_path)) as writer:
+            for index,page in enumerate(out):
+                check_cancel(cancel);progress(f'排版文字层 {index+1}/{len(out)} 页 · 共享字体资源')
+                device=writer.begin_page(page.rect)
+                for rect,markup in layouts[index]:
+                    check_cancel(cancel);story=fitz.Story(html=markup,user_css=CSS);more,_=story.place(rect)
+                    if more:raise ValueError('文字层排版溢出，译文已保留。')
+                    story.draw(device)
+                writer.end_page()
+        with fitz.open(overlay_path) as overlay:
+            for index,page in enumerate(out):
+                check_cancel(cancel);page.show_pdf_page(page.rect,overlay,index)
+        check_cancel(cancel)
+        dest=Path(folder)/'页边精读批注_原版左右留白.pdf';tmp=dest.with_suffix('.tmp.pdf')
+        progress(f'保存 {len(out)} 页 PDF…译文已缓存，可随时暂停')
+        # Stream-content deduplication (garbage=4) is quadratic on thousands of HTML fragments.
+        out.save(tmp,garbage=1,deflate=True)
+        check_cancel(cancel);progress('校验生成的 PDF…')
+        with fitz.open(tmp) as verified:
+            if len(verified)!=len(out):raise ValueError('PDF 保存校验失败；原有输出和译文缓存保留。')
+        check_cancel(cancel);tmp.replace(dest)
         report['output_pages']=len(out);(Path(folder)/'页边批注检查报告.json').write_text(json.dumps(report,ensure_ascii=False,indent=2),'utf-8')
         return {'pdf':str(dest),'audit':report}
-    finally:source.close();out.close()
+    finally:
+        source.close();out.close()
+        try:overlay_path.unlink(missing_ok=True)
+        except OSError:pass

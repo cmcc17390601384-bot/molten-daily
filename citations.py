@@ -78,25 +78,3 @@ def local_attachment(value,source_file):
     elif re.match(r'^[A-Za-z]:[\\/]',value):p=Path(value)
     else:return None
     return p if p.suffix.lower()=='.pdf' and p.is_file() else None
-
-def temporary_citation(p):
-    doi=real_doi(p)
-    if not doi:raise ValueError('请先补全 DOI，再复制可准确匹配的 EndNote 临时引用。')
-    if any(c in doi for c in '{};'):raise ValueError('此 DOI 含临时引用分隔符，请使用 Word 正式引用。')
-    return '{'+doi+'}'
-
-NS='http://schemas.openxmlformats.org/officeDocument/2006/bibliography'
-ET.register_namespace('b',NS)
-def word_source(p):
-    if not p.get('title') or not authors(p) or not year(p):raise ValueError('Word 引用需要标题、作者和年份；请先用 DOI 补全题录。')
-    root=ET.Element('{'+NS+'}Source')
-    def add(parent,key,value):return ET.SubElement(parent,'{'+NS+'}'+key) if value is None else _text(parent,key,value)
-    def _text(parent,key,value):e=ET.SubElement(parent,'{'+NS+'}'+key);e.text=clean(value);return e
-    tag='MD'+hashlib.sha256(p['doi'].encode()).hexdigest()[:20];add(root,'Tag',tag);add(root,'SourceType','JournalArticle')
-    a=add(add(root,'Author',None),'Author',None);names=add(a,'NameList',None)
-    for author in p.get('author_list') or [{'name':x} for x in authors(p)]:
-        person=add(names,'Person',None);add(person,'Last',author.get('family') or author.get('name',''))
-        if author.get('given'):add(person,'First',author['given'])
-    for k,v in {'Title':p['title'],'JournalName':p.get('journal',''),'Year':year(p),'Volume':p.get('volume',''),'Issue':p.get('issue',''),'Pages':p.get('page_range') or p.get('article_number',''),'StandardNumber':real_doi(p),'URL':p.get('url','')}.items():
-        if v:add(root,k,v)
-    return tag,ET.tostring(root,encoding='unicode')
