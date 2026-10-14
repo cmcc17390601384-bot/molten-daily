@@ -16,15 +16,19 @@ class LibraryUI:
         self.update_actions()
     def update_actions(self):
         if not hasattr(self,'export_btn'):return
-        p=self.store.paper(self.selected) if self.selected else None
+        p=self.store.found_paper(self.selected) if self.selected and self.tabs.currentIndex()==0 else self.store.paper(self.selected) if self.selected else None
         busy=bool(self.worker and self.worker.isRunning());single=bool(p) and not busy
+        in_library=single and bool(self.store.paper(p['doi']))
         pdf=single and bool(p.get('pdf')) and Path(p['pdf']).is_file()
         for name in ('search_read','library_read'):
             b=getattr(self,name);b.setEnabled(bool(pdf));b.setToolTip('打开已关联 PDF' if pdf else '请先选择一篇论文并获取或关联本地 PDF')
-        for name in ('search_attach','search_classify','library_attach','library_edit'):getattr(self,name).setEnabled(single)
-        can_get=single and (bool(p.get('pdf_url')) or p['doi'].startswith('10.')) and not pdf
+        for name in ('search_attach','search_classify','library_attach','library_edit'):
+            getattr(self,name).setEnabled(bool(in_library));getattr(self,name).setToolTip('' if in_library else '请先将选中文献加入图书馆')
+        can_get=in_library and (bool(p.get('pdf_url')) or p['doi'].startswith('10.')) and not pdf
         for name in ('search_get','library_get'):getattr(self,name).setEnabled(bool(can_get))
         self.search_doi.setEnabled(single and p.get('url','').startswith('https://'))
+        search_ids=self.search_ids();pending=[doi for doi in search_ids if not self.store.paper(doi)]
+        self.search_add.setEnabled(bool(pending) and not busy);self.search_add.setText(f'加入图书馆（{len(pending)}）' if pending else '已在图书馆' if search_ids else '加入图书馆')
         ids=self.library_ids();trash=self.category.currentData()=='trash';self.library_classify.setEnabled(bool(ids) and not busy and not trash)
         self.library_delete.setText('恢复选中' if trash else '删除选中');self.library_delete.setEnabled(bool(ids) and not busy)
         for action,one in getattr(self,'selection_actions',[]):action.setEnabled((len(ids)==1 if one else bool(ids)) and not busy and not trash)
@@ -106,6 +110,12 @@ class LibraryUI:
     def library_ids(self):
         if not hasattr(self,'library_table'):return []
         return [self.library_table.item(x.row(),0).data(Qt.UserRole) for x in self.library_table.selectionModel().selectedRows()]
+    def search_ids(self):
+        if not hasattr(self,'lib_table'):return []
+        return [self.lib_table.item(x.row(),0).data(Qt.UserRole) for x in self.lib_table.selectionModel().selectedRows()]
+    def add_search_selection(self):
+        count=self.store.add_search_to_library(self.search_ids());self.refresh()
+        self.status.setText(f'已加入 {count} 篇文献；已在图书馆的文献不重复添加。可获取 PDF、关联附件或加入分类。')
     def selected_ids(self):return self.library_ids() if self.tabs.currentIndex()==1 else ([self.selected] if self.selected else [])
     def select_library(self):
         ids=self.library_ids();self.selected=ids[0] if len(ids)==1 else None;self.update_actions()

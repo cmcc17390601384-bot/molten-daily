@@ -52,12 +52,12 @@ def test_model_can_recognize_synonyms_without_literal_query_match(tmp_path,monke
     prompts=[]
     def assess(self,system,payload,max_tokens):
         prompts.append(system)
-        return {'papers':[{'doi':payload[0]['doi'],'score':95,'core_match':True}]}
+        return {'papers':[{'doi':payload[0]['doi'],'score':95,'core_match':True,'evidence':[payload[0]['title']]}]}
     monkeypatch.setattr(DeepSeek,'json',assess)
     result=Retriever(store).search()
     assert len(result['selected'])==1 and '肿瘤免疫治疗' in prompts[0]
     assert all('molten' not in url for url in seen)
-    assert not Retriever(store).search()['selected']
+    assert len(Retriever(store).search()['selected'])==1 and not store.papers()
 
 
 def test_chinese_topic_automatically_generates_and_persists_queries(tmp_path,monkeypatch):

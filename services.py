@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import quote, urlencode, urlparse
 import requests
 from core import canonical_doi, safe_error, unprotect
-from topics import custom_topic, research_topic, topic_key, current_assessment, lexical_match, query_lines
+from topics import custom_topic, research_topic, topic_key, current_assessment, lexical_match, query_lines,evidence_hash
 
 class Cancelled(Exception): pass
 class ApiError(Exception): pass
@@ -84,7 +84,7 @@ class DeepSeek:
         topic=research_topic(self.s)
         if not topic or len(topic)>1500: raise ValueError('文献方向需填写 1–1500 个字符。')
         result=self.json('你是跨学科学术检索助手。把研究方向转成 2–4 组简洁英文检索短语。'
-            '每组保留核心研究对象与问题，使用同义词扩展，不添加无关领域或强加熔盐/核能要求。'
+            '每组都必须保留用户明确要求的核心研究对象和问题，使用同义词扩展；优先条件不是硬性条件。不要生成仅含泛泛关键词的组，不添加无关领域或强加熔盐/核能要求。'
             '不生成文献、DOI、影响因子，不添加布尔运算符。只返回 {"queries":["英文检索短语"]}。',
             {'research_direction':topic},1000)
         try: return query_lines(result.get('queries'))
@@ -94,19 +94,23 @@ class DeepSeek:
         criteria=('根据用户方向判断核心研究对象、问题和方法是否相关，不强加其他领域要求。' if custom_topic(self.s) else
             '判断熔盐是否作为电化学反应介质（仅用熔盐合成材料、然后水系电催化不算核心相关）。核能、锕系/镧系分离、乏燃料、熔盐堆优先。')
         result=self.json('你是学术文献筛选助手。用户研究方向：'+research_topic(self.s)+'。'+criteria+
+            '只有论文的主要研究内容直接满足方向中的全部硬性要求才能core_match=true。仅背景提及、共享泛词、仅材料制备相似不算。优先条件用于排序。证据不足设为false。'
             '只依据给定题目/摘要，不声称阅读全文。禁止生成新DOI、IF、页数或未给出的实验数据。'
             '返回 {"papers":[{"doi":"输入DOI","score":0到100,"core_match":true或false,"title_zh":"中文标题",'
             '"reason":"80字内推荐依据，证据不足就明确说","novelty":"题录/摘要支持的新意或未确定",'
-            '"questions":["适合学习的科学问题"]}]}。',payload,4500)
+            '"questions":["适合学习的科学问题"],"evidence":["题目或摘要中支持判断的连续原文摘录，正面匹配至少一条"]}]}。',payload,4500)
         allowed={p['doi'] for p in papers}; out={}
         for r in result.get('papers',[]):
             doi=canonical_doi(r.get('doi',''))
             if doi not in allowed: continue
             if not isinstance(r.get('score'),(int,float)) or not isinstance(r.get('core_match'),bool): continue
+            paper=next(p for p in papers if p['doi']==doi);normalize=lambda text:re.sub(r'\s+',' ',text).strip().casefold()
+            source=normalize(paper['title']+' '+paper.get('abstract',''));quotes=r.get('evidence',[])
+            evidence=[q[:1200] for q in quotes if isinstance(q,str) and 8<=len(q)<=1200 and normalize(q) in source] if isinstance(quotes,list) else []
             out[doi]={'score':max(0,min(100,int(r['score']))),'core_match':r['core_match'],
                       'title_zh':str(r.get('title_zh',''))[:500],'reason':str(r.get('reason',''))[:700],
                       'novelty':str(r.get('novelty',''))[:700],'questions':[str(x)[:200] for x in r.get('questions',[])[:3]],
-                      'basis':'仅依据题录/摘要的 AI 评估','topic_key':topic_key(self.s)}
+                      'basis':'题目/摘要原文证据支持的主题评估','topic_key':topic_key(self.s),'assessment_version':2,'evidence':evidence,'evidence_hash':evidence_hash(paper)}
         return out
 
 def plain(text): return html.unescape(re.sub('<[^>]+>',' ',text or '')).strip()
@@ -150,12 +154,13 @@ def topic_score(p,s=None):
 
 def eligibility(p,store,s=None,check_topic=True):
     s=s or store.settings(); score,core,nuc=topic_score(p,s); reasons=[]; ai=current_assessment(p,s)
-    if custom_topic(s) and ai: core=ai['core_match']
+    if ai: core=bool(ai.get('core_match') and ai.get('score',0)>=75 and ai.get('assessment_version')==2 and ai.get('evidence') and (custom_topic(s) or core))
+    if check_topic and s.get('ai_ranking') and s.get('api_secret') and not ai:reasons.append('主题证据评估未完成')
     if p.get('retracted'): reasons.append('撤稿/撤回记录')
     if check_topic and not core: reasons.append('与自定义方向的关联不足或尚待评估' if custom_topic(s) else '熔盐电化学关联不足')
     if not custom_topic(s) and s['nuclear_only'] and not nuc: reasons.append('核能关联不足')
     m=store.metric(p,s['metric_year'])
-    if not m: reasons.append(f"{s['metric_year']} 年 JIF 未核实")
+    if not m: reasons.append(f"{s['metric_year']} 年 JIF 未核实" if s['metric_year'] else '没有可核实的 JIF')
     elif float(m['value'])<=s['min_if']: reasons.append(f"JIF 未超过 {s['min_if']:g}")
     if s['strict_pages'] and (not p.get('pages') or p['pages']>s['max_pages']): reasons.append('篇幅不符合严格上限或页数未知')
     if check_topic and ai.get('core_match') is False: reasons.append('AI 判断主题不属于核心方向')
@@ -167,61 +172,11 @@ def eligibility(p,store,s=None,check_topic=True):
 class Retriever:
     def __init__(self,store,cancel=None,progress=lambda x:None): self.store=store; self.cancel=cancel; self.progress=progress
     def search(self,on_demand=False):
-        s=self.store.settings(); start=(date.today()-timedelta(days=s['days'])).isoformat(); end=date.today().isoformat()
-        if custom_topic(s) and not s['queries']:
-            if not s.get('api_secret'): raise ApiError('请在找文献页填写英文检索词，或配置 API 后自动生成。')
-            self.progress('正在将自定义方向转换为英文检索词…')
-            s['queries']=DeepSeek(self.store,s,self.cancel).plan_queries()
-            self.store.update_settings(queries=s['queries'])
-        merged={}; errors=[]; success=0
-        for i,q in enumerate(s['queries'][:6]):
-            self.progress(f'检索 {i+1}/{min(6,len(s["queries"]))}：{q}'); check_cancel(self.cancel)
-            params={'query':q,'filter':f'from-pub-date:{start},until-pub-date:{end},type:journal-article','rows':40,'sort':'relevance'}
-            if s.get('email'): params['mailto']=s['email']
-            try:
-                d=request_json('https://api.crossref.org/works?'+urlencode(params),cancel=self.cancel)
-                if d.get('status')!='ok' or not isinstance(d.get('message',{}).get('items'),list): raise ApiError('Crossref 数据结构异常')
-                for v in d['message']['items']:
-                    if v.get('DOI'): self._merge(merged,cr_paper(v))
-                success+=1
-            except Cancelled: raise
-            except Exception as e: errors.append('Crossref: '+safe_error(e))
-            params={'search':q,'filter':f'from_publication_date:{start},to_publication_date:{end},type:article','per_page':40}
-            if s.get('openalex_secret'): params['api_key']=unprotect(s['openalex_secret'])
-            try:
-                d=request_json('https://api.openalex.org/works?'+urlencode(params),cancel=self.cancel)
-                if not isinstance(d.get('results'),list): raise ApiError('OpenAlex 未返回 works 列表')
-                for v in d['results']:
-                    if v.get('doi'): self._merge(merged,oa_paper(v))
-                success+=1
-            except Cancelled: raise
-            except Exception as e: errors.append('OpenAlex: '+safe_error(e))
-        if not success: raise ApiError('所有检索来源都失败，不能判定没有新文献。\n'+'\n'.join(dict.fromkeys(errors)))
-        candidates=[p for p in merged.values() if (custom_topic(s) or topic_score(p,s)[1]) and start<=p.get('date','')<=end]
-        candidates.sort(key=lambda p:eligibility(p,self.store,s)[1],reverse=True)
-        # Update metadata first; no paper is ever created from model output.
-        new=0
-        for p in candidates: new+=self.store.put(p)
-        eligible=[p for p in candidates if eligibility(p,self.store,s,check_topic=not custom_topic(s))[0]][:20]
-        if s['ai_ranking'] and s['api_secret'] and eligible:
-            self.progress(f'DeepSeek 分析 {len(eligible)} 篇候选的相关性与新意…')
-            try:
-                analyses={}
-                for offset in range(0,len(eligible),10):
-                    analyses.update(DeepSeek(self.store,s,self.cancel).assess(eligible[offset:offset+10]))
-                for p in eligible:
-                    if p['doi'] in analyses: p['ai']=analyses[p['doi']]; self.store.put(p)
-            except Cancelled: raise
-            except Exception as e: errors.append('AI 评估未完成：'+safe_error(e))
-        self.store.update_settings(last_success=datetime.now().isoformat(timespec='seconds'))
-        eligible=[p for p in self.store.papers() if not p.get('seed') and (on_demand or (not p['notified'] and not p['seen'])) and start<=p.get('date','')<=end and eligibility(p,self.store,s)[0]]
-        eligible.sort(key=lambda p:(eligibility(p,self.store,s)[1],p['date']),reverse=True)
-        selected=eligible[:s['daily_count']]
-        if not on_demand:
-            for p in selected: self.store.set_flag(p['doi'],'notified',1)
-        result={'fetched':len(merged),'relevant':len(candidates),'new':new,'selected':selected,'errors':list(dict.fromkeys(errors)),'success_sources':success}
-        self.store.event('检索',json.dumps({k:v for k,v in result.items() if k!='selected'},ensure_ascii=False))
-        return result
+        from retrieval import search
+        try:return search(self,on_demand)
+        except Exception as error:
+            self.store.save_search_results(self.store.settings(),[],state='failed',errors=[safe_error(error)])
+            raise
     def _merge(self,out,p):
         if not p['doi'].startswith('10.'): return
         old=out.get(p['doi'],{}); source=old.get('source','')

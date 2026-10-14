@@ -70,13 +70,14 @@ def test_metric_conflicting_issn_and_conflicting_values_fail_closed(tmp_path):
     assert s.metric(p,2024) is None
 
 def test_metric_missing_source_or_date_never_qualifies(tmp_path):
-    s=Store(tmp_path);ms=s.metrics();ms[0]['checked']='';s.write_metrics(ms)
+    s=Store(tmp_path);s.update_settings(metric_year=2024);ms=s.metrics();ms[0]['checked']='';s.write_metrics(ms)
     assert not eligibility(paper(),s)[0]
 
 def test_ui_strict_jif_and_category_filters(tmp_path):
     from PySide6.QtWidgets import QApplication
     from ui import Window
     app=QApplication.instance() or QApplication([]);s=Store(tmp_path);s.put(paper());s.put(dict(paper(),doi='10.1234/unknown',issn=[],journal='Unknown'))
+    s.update_settings(metric_year=2024);s.save_search_results(s.settings(),[p['doi'] for p in s.papers()],state='complete')
     w=Window(s,smoke=True)
     assert w.tabs.widget(0).isAncestorOf(w.queries) and not w.tabs.widget(3).isAncestorOf(w.queries)
     assert w.lib_table.rowCount()==1 and w.library_table.rowCount()==2
@@ -91,6 +92,7 @@ def test_reader_actions_and_navigation(tmp_path):
     from PySide6.QtWidgets import QApplication
     from ui import Window
     app=QApplication.instance() or QApplication([]);s=Store(tmp_path/'data');s.put(paper());s.put(dict(paper(),doi='10.1234/second'))
+    s.save_search_results(s.settings(),[p['doi'] for p in s.papers()],state='complete')
     w=Window(s,smoke=True);w.show();app.processEvents()
     assert not w.search_read.isEnabled() and not w.generate_btn.isEnabled()
     w.lib_table.selectRow(0);app.processEvents();doi=w.selected

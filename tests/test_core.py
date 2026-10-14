@@ -8,7 +8,8 @@ from services import eligibility,topic_score,cr_paper,oa_paper,page_count,public
 from translation import extract_document,protect_text,validate_translation,restore,order_blocks,Translator
 
 @pytest.fixture
-def store(tmp_path):return Store(tmp_path/'data')
+def store(tmp_path):
+    s=Store(tmp_path/'data');s.update_settings(metric_year=2024);return s
 
 def test_secret_roundtrip():
     raw='test-secret-never-persist-in-clear'; encrypted=protect(raw)
@@ -27,7 +28,7 @@ def test_strict_greater_than_10(store):
     ms=store.metrics();ms[0]['value']='10';store.write_metrics(ms)
     assert not eligibility(SEEDS[0],store)[0]
 def test_year_exact(store):
-    s=store.settings();s['metric_year']=2025;assert not eligibility(SEEDS[0],store,s)[0]
+    s=store.settings();s['metric_year']=2022;assert not eligibility(SEEDS[0],store,s)[0]
 def test_pages_unknown_and_long(store):
     s=store.settings();s['strict_pages']=True
     assert eligibility(SEEDS[0],store,s)[0]
@@ -119,10 +120,12 @@ def test_total_network_failure_not_no_papers(store,monkeypatch):
     def fail(*a,**kw):raise ApiError('network unavailable')
     monkeypatch.setattr('services.request_json',fail)
     with pytest.raises(ApiError,match='所有检索来源'):Retriever(store).search()
-def test_seed_excluded_from_daily_and_push_dedup(store,monkeypatch):
+def test_search_repeats_without_adding_results_to_library(store,monkeypatch):
     old=dict(SEEDS[0]);store.put(old)
     recent=dict(SEEDS[0],doi='10.1234/recent',date=date.today().isoformat(),seed=False)
     fake={'status':'ok','message':{'items':[{'DOI':recent['doi'],'title':[recent['title']],'abstract':recent['abstract'],'container-title':[recent['journal']],'ISSN':recent['issn'],'published':{'date-parts':[[date.today().year,date.today().month,date.today().day]]},'page':'1-6'}]}}
     monkeypatch.setattr('services.request_json',lambda url,**kw:fake if 'crossref' in url else {'results':[]})
     r=Retriever(store).search();assert len(r['selected'])==1
-    assert not Retriever(store).search()['selected']
+    assert len(Retriever(store).search()['selected'])==1
+    assert [p['doi'] for p in store.papers()]==[old['doi']]
+    assert store.paper(recent['doi']) is None

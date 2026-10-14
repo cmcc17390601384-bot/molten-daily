@@ -51,7 +51,24 @@ def main():
                 received=run_margin_process(receiver,pdf,threading.Event(),lambda message:None,interactive=True)
                 assert received['paragraphs']==2 and receiver.tokens()==0
                 encrypted=protect('local-self-test');assert unprotect(encrypted)=='local-self-test'
+                from datetime import date
+                from core import SEEDS
+                store.update_settings(ai_ranking=False)
+                paper=dict(SEEDS[0],doi='10.1234/smoke-search',seed=False,date=date.today().isoformat())
+                store.stage_search_papers([paper]);store.save_search_results(w.search_settings(),[paper['doi']],state='complete',fetched=1)
+                w.tabs.setCurrentIndex(0);w.refresh();assert w.lib_table.rowCount()==1
+                assert store.paper(paper['doi']) is None
+                assert not w.search_read.isEnabled()
+                original_topic=w.topic_input.text();w.topic_input.setText('Computer vision');assert w.lib_table.rowCount()==0
+                assert store.found_paper(paper['doi'])
+                w.topic_input.setText(original_topic);assert w.lib_table.rowCount()==1
+                w.lib_table.selectRow(0);w.add_search_selection();assert store.paper(paper['doi'])
+                w.year.setValue(2022);assert w.year.value()==0
+                from PySide6.QtWidgets import QPushButton
+                next(b for b in w.findChildren(QPushButton) if b.text()=='展开检索词与高级选项').click()
+                w.lib_table.selectRow(0);app.processEvents();w.grab().save(str(dest/'exe_search.png'))
                 report={'ok':True,'native_qt':True,'pages':w.tabs.count(),'version':VERSION,'dpapi_roundtrip':True,
+                        'search_condition_isolation':True,'manual_library_add':True,'library_preserved':True,'verified_year_selector':True,'no_pdf_button_disabled':True,
                         'interactive_reader':True,'original_pages':len(w.source_doc),'hover_mapping':True,'portable_package':True,'package_receiver_tokens':receiver.tokens(),'isolated_pdf_process':True,'zoom':True,'daily_limit':store.settings()['daily_token_limit']}
                 if args.check_api:
                     from services import DeepSeek

@@ -56,7 +56,10 @@ def prepare_theme():
     if os.name=='nt':os.environ.setdefault('QT_QPA_PLATFORM','windows:darkmode=0')
 
 def install_theme(app,stylesheet):
-    app.setStyle('Fusion');app.setStyleSheet(stylesheet+EXTRAS)
+    # Replacing a live Qt style destroys the old native style object. Keep the
+    # existing Fusion style on repeated installation (including dialog tests).
+    if app.style().objectName().casefold()!='fusion':app.setStyle('Fusion')
+    if app.styleSheet()!=stylesheet+EXTRAS:app.setStyleSheet(stylesheet+EXTRAS)
     if not hasattr(app,'_molten_theme'):app._molten_theme=FixedTheme(app)
     else:app._molten_theme.restore()
     return app._molten_theme

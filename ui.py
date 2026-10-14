@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBo
     QTextBrowser,QTextEdit,QLineEdit,QComboBox,QSpinBox,QDoubleSpinBox,QCheckBox,QTimeEdit,QFormLayout,
     QScrollArea,QFileDialog,QInputDialog,QMessageBox,QProgressBar,QSystemTrayIcon,QMenu,QFrame,QAbstractItemView)
 from core import APP,VERSION,SEEDS,Store,protect,unprotect,safe_error,set_autostart,DEFAULTS
-from topics import custom_topic,research_topic,current_assessment,query_lines
+from topics import custom_topic,research_topic,current_assessment,query_lines,search_key
 from services import Retriever,DeepSeek,eligibility,topic_score,download_pdf,Cancelled
 from translation import Translator,extract_document,scientific_html
 from margins import MarginAnnotator
@@ -75,6 +75,20 @@ class PdfArea(QScrollArea):
             self.zoomed.emit(10 if event.angleDelta().y()>0 else -10);event.accept()
         else:super().wheelEvent(event)
 
+class MetricYear(QComboBox):
+    valueChanged=Signal(int)
+    def __init__(self,store,value):
+        super().__init__();self.reload(store,value);self.currentIndexChanged.connect(lambda *_:self.valueChanged.emit(self.value()))
+    def value(self):return int(self.currentData() or 0)
+    def setValue(self,value):self.setCurrentIndex(max(0,self.findData(int(value))))
+    def reload(self,store,value=None):
+        value=self.value() if value is None else value;self.blockSignals(True);self.clear();self.addItem('最新已核实（推荐）',0)
+        rows=store.metrics()
+        for year in sorted({int(r['year']) for r in rows if int(r['year'])<date.today().year},reverse=True):
+            count=len({r['journal'].casefold() for r in rows if int(r['year'])==year})
+            self.addItem(f'{year} 年指标（{count} 本期刊）',year)
+        self.setValue(value);self.blockSignals(False)
+
 
 class Window(LibraryUI,QMainWindow):
     def __init__(self,store=None,smoke=False):
@@ -101,11 +115,11 @@ class Window(LibraryUI,QMainWindow):
         s=self.store.settings();v=self.page('找文献')
         row=QHBoxLayout();self.topic_input=QLineEdit(research_topic(s));self.topic_input.setPlaceholderText('输入研究方向，如：钠离子电池正极材料的原位表征')
         row.addWidget(self.topic_input,1);self.search_btn=button('按此方向查询',self.search,True);row.addWidget(self.search_btn);v.addLayout(row)
-        self.topic_input.textEdited.connect(lambda:self.queries.clear())
+        self.topic_input.textEdited.connect(lambda:self.queries.clear());self.topic_input.textChanged.connect(self.refresh)
         filters=QWidget();grid=QGridLayout(filters);grid.setContentsMargins(0,0,0,0);grid.setHorizontalSpacing(12)
         self.days=QSpinBox();self.days.setRange(1,3650);self.days.setValue(s['days']);self.days.setSuffix(' 天')
         self.minif=QDoubleSpinBox();self.minif.setRange(0,100);self.minif.setValue(s['min_if'])
-        self.year=QSpinBox();self.year.setRange(2020,date.today().year);self.year.setValue(s['metric_year'])
+        self.year=MetricYear(self.store,s['metric_year'])
         self.maxpages=QSpinBox();self.maxpages.setRange(3,100);self.maxpages.setValue(s['max_pages']);self.maxpages.setSuffix(' 页')
         for i,(name,widget) in enumerate([('最近发表',self.days),('JIF 必须大于',self.minif),('JIF 年份',self.year),('短篇优先',self.maxpages)]):
             grid.addWidget(label(name,'muted'),0,i);grid.addWidget(widget,1,i)
@@ -113,18 +127,21 @@ class Window(LibraryUI,QMainWindow):
         advanced=button('展开检索词与高级选项',lambda:None);advanced.setCheckable(True);v.addWidget(advanced)
         self.advanced_filters=QWidget();form=QFormLayout(self.advanced_filters);form.setContentsMargins(0,0,0,0)
         self.queries=QTextEdit();self.queries.setPlainText('\n'.join(s['queries']));self.queries.setMaximumHeight(85);form.addRow('英文检索词（每行一组）',self.queries)
+        self.queries.textChanged.connect(self.refresh)
+        self.search_depth=QSpinBox();self.search_depth.setRange(1,10);self.search_depth.setValue(s.get('search_pages',3));self.search_depth.setSuffix(' 页 × 100 条 / 每来源每组词');self.search_depth.valueChanged.connect(self.refresh);form.addRow('检索深度',self.search_depth)
         self.strict=QCheckBox('严格限制页数，未知页数不通过');self.strict.setChecked(s['strict_pages']);self.strict.toggled.connect(self.refresh);form.addRow('',self.strict)
-        row=QHBoxLayout();row.addWidget(button('导入 JIF 表',self.import_metrics));row.addWidget(button('导出 JIF 表',self.export_metrics));row.addWidget(label('内置 3 本期刊的 2024 年 JIF；导入指标须有年份、来源与核对日期。','muted'),1);form.addRow('',row)
+        row=QHBoxLayout();row.addWidget(button('导入 JIF 表',self.import_metrics));row.addWidget(button('导出 JIF 表',self.export_metrics));row.addWidget(button('联网更新 JIF',self.update_metrics));self.metric_coverage=label('','muted');row.addWidget(self.metric_coverage,1);form.addRow('',row)
         self.advanced_filters.hide();v.addWidget(self.advanced_filters)
         advanced.toggled.connect(lambda checked:(self.advanced_filters.setVisible(checked),advanced.setText('收起检索词与高级选项' if checked else '展开检索词与高级选项')))
         for control in (self.days,self.minif,self.year,self.maxpages):control.valueChanged.connect(self.refresh)
-        self.digest=label('JIF 是硬性门槛：仅显示所选年份已记录来源且严格高于阈值的论文。未核实指标一律排除。','muted');v.addWidget(self.digest)
-        row=QHBoxLayout();self.filter=QLineEdit();self.filter.setPlaceholderText('筛选本地标题、DOI、期刊');self.filter.textChanged.connect(self.refresh)
-        row.addWidget(self.filter);self.strict_view=QCheckBox('只看符合筛选条件');self.strict_view.toggled.connect(self.refresh);row.addWidget(self.strict_view);v.addLayout(row)
-        self.lib_table=table(['论文','期刊','发表日期','JIF / 状态']);self.lib_table.horizontalHeader().setSectionResizeMode(0,QHeaderView.Stretch)
+        self.digest=label('只展示本次检索且通过主题与 JIF 门槛的文献；更换条件后请重新查询。','muted');v.addWidget(self.digest)
+        row=QHBoxLayout();self.filter=QLineEdit();self.filter.setPlaceholderText('在本次结果中筛选标题、DOI、期刊');self.filter.textChanged.connect(self.refresh)
+        row.addWidget(self.filter);required=label('主题与 JIF 均为必需条件','muted');required.setWordWrap(False);row.addWidget(required);v.addLayout(row)
+        self.lib_table=table(['论文','期刊','发表日期','JIF / 状态']);self.lib_table.setSelectionMode(QAbstractItemView.ExtendedSelection);self.lib_table.horizontalHeader().setSectionResizeMode(0,QHeaderView.Stretch)
         self.lib_table.itemSelectionChanged.connect(self.select_paper);v.addWidget(self.lib_table,1)
         self.detail=QTextBrowser();self.detail.setOpenExternalLinks(True);self.detail.setMaximumHeight(135);v.addWidget(self.detail)
         row=QHBoxLayout()
+        self.search_add=button('加入图书馆',self.add_search_selection,True);row.addWidget(self.search_add)
         self.search_read=button('阅读 PDF',self.open_reader_selected,True);self.search_get=button('获取开放 PDF',self.get_pdf);self.search_attach=button('关联 PDF',self.attach_pdf);self.search_doi=button('出版社',self.open_doi);self.search_classify=button('加入分类',self.classify)
         for widget in (self.search_read,self.search_get,self.search_attach,self.search_doi,self.search_classify):row.addWidget(widget)
         row.addStretch();row.addWidget(button('打开图书馆',self.show_library));v.addLayout(row)
@@ -206,8 +223,9 @@ class Window(LibraryUI,QMainWindow):
             qs=[q.strip() for q in self.queries.toPlainText().splitlines() if q.strip()]
             if qs:qs=query_lines(qs)
             if self.base.text().strip().rstrip('/')!=self.profile_url:self.endpoint_edited()
-            s=self.store.settings();s.update(base_url=public_url(self.base.text().strip().rstrip('/')),model=self.model.currentText().strip(),
-                daily_token_limit=self.budget.value(),topic_mode='custom',research_topic=topic,queries=qs,schedule=False,
+            s=self.store.settings();mode='molten' if not custom_topic(s) and topic==research_topic(s) else 'custom'
+            s.update(base_url=public_url(self.base.text().strip().rstrip('/')),model=self.model.currentText().strip(),
+                daily_token_limit=self.budget.value(),topic_mode=mode,research_topic=topic,queries=qs,schedule=False,search_pages=self.search_depth.value(),
                 days=self.days.value(),min_if=self.minif.value(),metric_year=self.year.value(),max_pages=self.maxpages.value(),strict_pages=self.strict.isChecked())
             if not s['model'] and not allow_empty_model:raise ValueError('请先检测并选择模型，或手动填写模型 ID。')
             from providers import remember
@@ -241,26 +259,46 @@ class Window(LibraryUI,QMainWindow):
     def cancel(self):
         if self.cancel_event:self.cancel_event.set();self.status.setText('正在暂停；当前请求完成后保存结果，不丢弃已付费内容。')
     def search(self):
-        if self.save_settings():self.run_job('检索真实题录…',lambda c,p:Retriever(self.store,c,p).search(on_demand=True),self.search_done)
+        if self.save_settings():
+            self.store.save_search_results(self.store.settings(),[],state='running');self.refresh()
+            self.run_job('检索真实题录…',lambda c,p:Retriever(self.store,c,p).search(on_demand=True),self.search_done)
     def search_done(self,r):
         self.queries.setPlainText('\n'.join(self.store.settings()['queries']))
-        self.digest.setText(f'检索 {r["fetched"]} 条记录；本次符合条件 {len(r["selected"])} 篇。'+(' 部分服务未完成：'+'；'.join(r['errors']) if r['errors'] else ''))
-        self.status.setText('查询完成，结果已保存在本地。');self.refresh()
+        self.status.setText('查询完成，结果独立保存。选中需要的文献后点击“加入图书馆”，支持 Ctrl / Shift 多选。');self.refresh()
+    def search_settings(self):
+        s=self.store.settings();topic=self.topic_input.text().strip();mode='molten' if not custom_topic(s) and topic==research_topic(s) else 'custom'
+        s.update(topic_mode=mode,research_topic=topic,queries=[q.strip() for q in self.queries.toPlainText().splitlines() if q.strip()],
+            metric_year=self.year.value(),min_if=self.minif.value(),days=self.days.value(),max_pages=self.maxpages.value(),strict_pages=self.strict.isChecked(),search_pages=self.search_depth.value())
+        return s
     def refresh(self,*_):
         if not hasattr(self,'usage'):return
         self.usage.setText(f'今日已用 {self.store.tokens():,} / {self.store.daily_budget():,} Token（含今天追加额度）')
-        previous=self.selected;rows=[];s=self.store.settings();s.update(metric_year=self.year.value(),min_if=self.minif.value(),days=self.days.value(),max_pages=self.maxpages.value(),strict_pages=self.strict.isChecked());q=self.filter.text().casefold()
-        for p in self.store.papers():
+        previous=self.selected;rows=[];s=self.search_settings();q=self.filter.text().casefold();run=self.store.search_results()
+        matched=run.get('key')==search_key(s);stats=run.get('stats',{}) if matched else {}
+        for doi in run.get('dois',[]) if matched else []:
+            p=self.store.found_paper(doi)
+            if not p:continue
             ok,score,reasons,m=eligibility(p,self.store,s)
+            if not ok:continue
             if not m or float(m['value'])<=s['min_if']:continue
             if not (date.today()-timedelta(days=s['days'])).isoformat()<=p.get('date','')<=date.today().isoformat():continue
             if q not in (p['title']+' '+p['doi']+' '+p['journal']).casefold():continue
-            if self.strict_view.isChecked() and not ok:continue
             rows.append((ok,score,p,reasons,m))
+        metrics=self.store.metrics();years=sorted({str(m['year']) for m in metrics},reverse=True)
+        chosen=[m for m in metrics if not s['metric_year'] or int(m['year'])==s['metric_year']]
+        self.metric_coverage.setText(f'本模式覆盖 {len({m["journal"].casefold() for m in chosen})} 本期刊 · 指标年份 {" / ".join(years)}；JIF 年份不是发表年份。')
+        if stats.get('state')=='complete':
+            self.digest.setText(f'本次题录 {stats.get("fetched",0)} 条 · 符合条件 {len(rows)} 篇 · JIF 未核实 {stats.get("unknown_jif",0)} / 未达标 {stats.get("below_jif",0)} · 主题剔除 {stats.get("topic_rejected",0)} / 待核验 {stats.get("unassessed",0)}'+('。已到检索深度上限，可在高级选项增加。' if stats.get('truncated') else '')+('。部分服务未完成：'+'；'.join(stats['errors']) if stats.get('errors') else ''))
+            self.digest.setToolTip('JIF 尚未覆盖的期刊：\n'+'\n'.join(stats.get('missing_journals',[])[:50]))
+        elif stats.get('state')=='failed':
+            self.digest.setText('本次查询未完成，旧结果已清空：'+'；'.join(stats.get('errors',[])));self.digest.setToolTip('')
+        else:
+            self.digest.setText('正在查询当前条件，旧结果已清空。' if stats.get('state')=='running' else '条件尚未查询或已改变，请点击“按此方向查询”；既有文献保存在图书馆。');self.digest.setToolTip('')
         rows.sort(key=lambda x:(x[0],x[1],x[2].get('date','')),reverse=True);self.lib_table.blockSignals(True);self.lib_table.setRowCount(len(rows))
         for i,(ok,score,p,reasons,m) in enumerate(rows):
             title=current_assessment(p,s).get('title_zh') or p['title']
-            for j,text in enumerate([title,p['journal'],p.get('date',''),str(m['value'])+' ('+str(m['year'])+')'+(' / 符合' if ok else ' / 其他条件待核实')]):
+            for j,text in enumerate([title,p['journal'],p.get('date',''),str(m['value'])+' ('+str(m['year'])+')']):
+                if j==3:text+=' · 已入库' if self.store.paper(p['doi']) else ' · 未入库'
                 item=QTableWidgetItem(text);item.setData(Qt.UserRole,p['doi']);item.setToolTip('; '.join(reasons));self.lib_table.setItem(i,j,item)
             self.lib_table.setRowHeight(i,48)
         self.lib_table.clearSelection();self.lib_table.setCurrentCell(-1,-1)
@@ -271,16 +309,20 @@ class Window(LibraryUI,QMainWindow):
         if hasattr(self,'category'):self.refresh_categories()
         self.update_actions()
     def select_paper(self):
+        ids=self.search_ids()
+        if len(ids)>1:
+            self.selected=None;self.detail.setPlainText(f'已选中 {len(ids)} 篇文献。点击“加入图书馆”批量保存，已入库的文献会自动跳过。');self.update_actions();return
         row=self.lib_table.currentRow()
         if row<0 or not self.lib_table.item(row,0):
-            self.selected=None;self.detail.setPlainText('选择一篇论文查看摘要和 JIF 来源。' if self.lib_table.rowCount() else '暂无符合当前 JIF 与日期要求的记录。可扩大时间范围或导入有来源的 JIF 表；本地文献请在图书馆管理。');self.update_actions();return
-        self.selected=self.lib_table.item(row,0).data(Qt.UserRole);p=self.store.paper(self.selected);e=html.escape
-        a=current_assessment(p,self.store.settings());_,_,reasons,m=eligibility(p,self.store,dict(self.store.settings(),metric_year=self.year.value(),min_if=self.minif.value()))
+            self.selected=None;self.detail.setPlainText('选择一篇论文查看主题证据与 JIF 来源。' if self.lib_table.rowCount() else '当前没有已通过全部条件的结果；请查询当前条件，或根据上方统计调整时间范围、检索词、检索深度和指标表。');self.update_actions();return
+        self.selected=self.lib_table.item(row,0).data(Qt.UserRole);p=self.store.found_paper(self.selected);e=html.escape
+        a=current_assessment(p,self.search_settings());_,_,reasons,m=eligibility(p,self.store,self.search_settings())
         metric_info=('<p>JIF '+e(str(m['value']))+' · '+e(str(m['year']))+' 年 · 核对日期 '+e(m['checked'])+' · <a href="'+e(m['source'],quote=True)+'">指标来源</a></p>') if m else ''
-        self.detail.setHtml(metric_info+'<h3>'+e(p['title'])+'</h3><p>'+e('；'.join(reasons) or '符合当前筛选')+'</p><p>'+e(a.get('reason',''))+'</p><p>'+e(p.get('abstract','') or '来源未提供摘要')+'</p>')
+        evidence='<p>主题证据：'+e('；'.join(a.get('evidence',[])))+'</p>' if a.get('evidence') else '<p>主题依据：题目 / 摘要满足检索词规则。</p>'
+        self.detail.setHtml(metric_info+'<h3>'+e(p['title'])+'</h3>'+evidence+'<p>'+e(a.get('reason',''))+'</p><p>'+e(p.get('abstract','') or '来源未提供摘要')+'</p>')
         self.update_actions()
     def open_doi(self):
-        p=self.store.paper(self.selected) if self.selected else None
+        p=self.store.found_paper(self.selected) if self.selected else None
         if p and p.get('url','').startswith('https://'):QDesktopServices.openUrl(QUrl(p['url']))
     def get_pdf(self):
         p=self.store.paper(self.selected) if self.selected else None
@@ -415,11 +457,16 @@ class Window(LibraryUI,QMainWindow):
             with open(file,encoding='utf-8-sig',newline='') as f:rows=list(csv.DictReader(f))
             merged={(r['journal'].casefold(),str(r['year'])):r for r in self.store.metrics()}
             for r in rows:merged[(r['journal'].casefold(),str(r['year']))]=r
-            self.store.write_metrics(list(merged.values()));self.refresh();self.status.setText('指标表已合并。')
+            self.store.write_metrics(list(merged.values()));self.year.reload(self.store);self.refresh();self.status.setText('指标表已合并。')
         except Exception as e:self.job_error(safe_error(e))
     def export_metrics(self):
         file,_=QFileDialog.getSaveFileName(self,'导出 JIF 表','journal_metrics.csv','CSV (*.csv)')
         if file:shutil.copy2(self.store.root/'journal_metrics.csv',file)
+    def update_metrics(self):
+        from journal_metrics import update_publisher_metrics
+        def done(result):
+            self.year.reload(self.store);self.refresh();self.status.setText(f'已核对出版社 {result["year"]} 年 {result["rows"]} 本期刊指标，新增 {result["added"]} 条；已有同年指标保留。')
+        self.run_job('联网核对 JIF…',lambda c,p:update_publisher_metrics(self.store,c,p),done)
     def closeEvent(self,event):
         if self.worker and self.worker.isRunning():self.want_quit=True;self.cancel();event.ignore();return
         self.store.budget_handler=None

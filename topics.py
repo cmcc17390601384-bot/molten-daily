@@ -15,15 +15,28 @@ def research_topic(settings):
 
 
 def topic_key(settings):
-    fields = [settings.get('topic_mode', 'molten'), research_topic(settings),
+    fields = ['strict-relevance-v2',settings.get('topic_mode', 'molten'), research_topic(settings),
               settings.get('queries', []), settings.get('nuclear_only', False) if not custom_topic(settings) else False]
     return hashlib.sha256(json.dumps(fields, ensure_ascii=False).encode()).hexdigest()[:20]
+
+def search_key(settings):
+    # Widgets serialize whole-number thresholds as floats; equivalent numeric
+    # criteria must still identify the same run after reopening the window.
+    fields=[topic_key(settings),int(settings.get('days',90)),float(settings.get('min_if',10)),
+            int(settings.get('metric_year',0)),int(settings.get('max_pages',8)),
+            bool(settings.get('strict_pages',False)),int(settings.get('search_pages',3))]
+    return hashlib.sha256(json.dumps(fields,ensure_ascii=False).encode()).hexdigest()
+
+def evidence_hash(paper):
+    return hashlib.sha256((paper.get('title','')+'\n'+paper.get('abstract','')).encode()).hexdigest()
 
 
 def current_assessment(paper, settings):
     assessment = paper.get('ai', {})
     # Old unscoped assessments must not constrain a newly selected direction.
-    return assessment if assessment.get('topic_key') == topic_key(settings) else {}
+    valid=assessment.get('topic_key')==topic_key(settings)
+    if assessment.get('evidence_hash'):valid=valid and assessment['evidence_hash']==evidence_hash(paper)
+    return assessment if valid else {}
 
 
 def query_lines(value):

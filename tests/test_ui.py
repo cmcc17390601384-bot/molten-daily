@@ -8,6 +8,7 @@ import threading
 
 def test_simple_native_workflow_and_zoom(tmp_path):
     app=QApplication.instance() or QApplication([]);store=Store(tmp_path/'data');store.put(dict(SEEDS[0],date=date.today().isoformat()))
+    store.save_search_results(store.settings(),[SEEDS[0]['doi']],state='complete')
     w=Window(store,smoke=True);w.show();QTest.qWait(70)
     assert w.tabs.count()==4 and [w.tabs.tabText(i) for i in range(4)]==['找文献','图书馆','交互精读','设置']
     assert w.lib_table.rowCount()==1
